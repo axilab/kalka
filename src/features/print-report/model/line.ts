@@ -1,5 +1,6 @@
 import { plainNow, styleWords, toolOf } from 'entities/entry'
 import type { Entry } from 'shared/model/format'
+import type { Tool } from 'shared/model/ui'
 import { TOOL_LABELS } from 'shared/model/ui'
 
 /*
@@ -50,6 +51,15 @@ import { TOOL_LABELS } from 'shared/model/ui'
 
 /** Готовые к печати части одной строки описи. Пустая строка — части нет. */
 export interface ReportLine {
+  /**
+   * Инструмент записи. `null` — определить не удалось.
+   *
+   * Лежит рядом со словом намеренно и вторую истину не заводит: `toolOf()`
+   * зовётся ОДИН раз, а показывается результат в двух видах — значком на бирке
+   * и словом в строке. Считать инструмент второй раз в сборщике документа
+   * значило бы развести два вычисления одного и того же.
+   */
+  tool: Tool | null
   /** Вид правки словом: инструмент, которым она сделана. */
   kind: string
   /** Маршрут страницы, на которой сделана правка. */
@@ -81,6 +91,7 @@ export function lineOf(entry: Entry, doc: Document): ReportLine {
   const tool = toolOf(entry)
 
   return {
+    tool,
     kind: tool === null ? '' : TOOL_LABELS[tool],
     route: entry.route,
     was: entry.was,

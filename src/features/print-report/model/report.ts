@@ -1,37 +1,49 @@
-import { plainHtml, styleWords } from 'entities/entry'
+import { toolOf } from 'entities/entry'
 import { createLogger } from 'shared/lib/log'
+import { plural } from 'shared/lib/plural'
 import type { Entry } from 'shared/model/format'
 import type { Cutout } from 'shared/model/layer'
+import type { Tool } from 'shared/model/ui'
+import type { IconShape } from 'shared/ui/icons'
+import { ICON_GEOMETRY, ICON_PATHS } from 'shared/ui/icons'
+import { lineOf } from './line'
 import { markUp } from './mark'
+import { windowOf } from './window'
 
 const log = createLogger('report')
 
 /*
  * Сборка печатного документа отчёта.
  *
- * ── Вид: ДЕЛОВАЯ ЗАПИСКА, а не корректорский лист ──────────────────────────
+ * ── Вид: ОПИСЬ, а не поручение ──────────────────────────────────────────────
  *
- * Главный читатель — менеджер, который передаёт задачу разработчику. Ему нужен
- * ответ на «сколько тут работы и что с этим делать», а не разметка правки.
- * Отсюда шапка с адресом, датой, автором и числом правок; отсюда два раздела,
- * упорядоченные по тому, КТО действует; отсюда рамка с именем файла обмена.
- * Метафора кальки остаётся в самом виджете, на бумагу она не едет.
+ * Документ ничего не предписывает и никого ни к чему не обязывает. Он отражает
+ * правки рецензента — и только. Прежний вид делал обратное: делил правки на
+ * разделы по тому, КТО должен действовать, считал, сколько из них «требуют
+ * решения», и рамкой объяснял читателю, что ему теперь делать с файлом. Это
+ * оценка объёма работ и распределение поручений, то есть работа, которую
+ * документ выполнял за людей и не имел на то никаких оснований: он не знает
+ * ни их договорённостей, ни того, кто у них что делает.
  *
- * ── Порядок разделов: сперва то, что требует человека ──────────────────────
+ * Опись знает ровно то, что видела: сколько правок, где каждая стоит, чем была
+ * и чем стала. Одна таблица, сквозная нумерация набора, никаких разделов.
  *
- * «Требует решения» впереди: пожелания оформления и замечания агент
- * механически не применяет, и это и есть задача, которую менеджер кому-то
- * поручит. «Правки текста» после: их агент применит сам, и читать их подряд
- * менеджеру незачем.
+ * ── Вид правки называется инструментом ──────────────────────────────────────
  *
- * ── Порядок страниц устойчив ────────────────────────────────────────────────
+ * «Текст», «Область», «Указатель» — то, чем правка сделана, а не то, кому её
+ * адресовать. Слово приходит готовым из `line.ts`, значок — из того же набора
+ * контуров, которым нарисована палитра инструментов на экране. Бирка описи
+ * и метка на живой странице несут один номер: это единственная ниточка между
+ * бумагой и прототипом.
  *
- * Страницы идут по первому появлению записи в наборе. Текущий маршрут сюда
+ * ── Порядок строк устойчив ──────────────────────────────────────────────────
+ *
+ * Строки идут в порядке сквозной нумерации набора. Текущий маршрут сюда
  * не передаётся вовсе — намеренно: список разбора на экране поднимает текущую
  * страницу наверх, и это правильно там, где человек на ней стоит. В печатном
  * документе «текущая» страница — та, где рецензент случайно оказался в момент
  * печати, и два прогона по одному набору дали бы документы с разным порядком
- * разделов. После этого сослаться на «третью страницу отчёта» в переписке
+ * строк. После этого сослаться на «третью правку в отчёте» в переписке
  * стало бы нельзя.
  *
  * ── FR-36 ───────────────────────────────────────────────────────────────────
@@ -81,56 +93,50 @@ function formatMoment(at: Date): string {
   )
 }
 
-/** Правильная форма слова при числе. */
-function plural(count: number, one: string, few: string, many: string): string {
-  const mod100 = count % 100
-  if (mod100 >= 11 && mod100 <= 14) return many
-  const mod10 = count % 10
-  if (mod10 === 1) return one
-  if (mod10 >= 2 && mod10 <= 4) return few
-  return many
-}
-
 /**
- * Требует ли запись решения ЧЕЛОВЕКА.
- *
- * Не только по типу. Запись `text-override` с непустым пожеланием оформления —
- * достижимое штатное состояние: рецензент и текст поправил, и попросил сделать
- * его крупнее. Тип у неё один, а работы в ней две, и вторую агент механически
- * не применяет. Считать её «агент сделает сам» значит спрятать половину правки.
- */
-function hasStyleWish(entry: Entry): boolean {
-  return entry.style.fontSize !== undefined || entry.style.color !== undefined
-}
-
-function needsPerson(entry: Entry): boolean {
-  return entry.type !== 'text-override' || hasStyleWish(entry)
-}
-
-/** Группы по страницам в порядке ПЕРВОГО ПОЯВЛЕНИЯ записи. */
-function groupByRoute(entries: readonly Entry[]): { route: string; entries: Entry[] }[] {
-  const groups = new Map<string, Entry[]>()
-  for (const entry of entries) {
-    const bucket = groups.get(entry.route)
-    if (bucket) bucket.push(entry)
-    else groups.set(entry.route, [entry])
-  }
-
-  return [...groups.entries()].map(([route, items]) => ({ route, entries: items }))
-}
-
-/**
- * Ширина колонки под картинку, px при 96 dpi.
+ * Ширина колонки МЕСТА, px при 96 dpi.
  *
  * A4 (210 мм) минус поля `@page` (14 мм с каждой стороны) — это 182 мм,
- * то есть примерно 688 px. Минус жёлоб под номер записи (26 px кружок
- * плюс 10 px зазор) остаётся 652.
+ * то есть примерно 688 px. Из них бирка с зазором забирает 36 px, и под текст
+ * правки остаётся ≈412 px: две колонки, а не одна, потому что в описи место
+ * и содержание правки стоят рядом, а не друг под другом.
  *
  * Число живёт здесь, а не в `shared/config/constants`: оно выведено из `@page`
  * этого документа и вместе с ним и меняется. В константах общего пользования
- * оно разъехалось бы с полями страницы при первой же правке вёрстки.
+ * оно разъехалось бы с полями страницы при первой же правке вёрстки. По той же
+ * причине оно уходит ПАРАМЕТРОМ в `windowOf`, а не читается оттуда: арифметика
+ * окна не обязана знать про поля печатной страницы.
  */
-const COLUMN_PX = 652
+const PLACE_PX = 240
+
+/**
+ * Значок инструмента строкой.
+ *
+ * Контуры берутся из того же набора, которым нарисована палитра инструментов
+ * (`shared/ui/icons`): один и тот же след инструмента обязан выглядеть на бумаге
+ * так же, как на экране. Компоненты Preact сюда не годятся — документ собирается
+ * строкой, а не деревом, — поэтому наружу и вынесены данные, а не разметка.
+ *
+ * `stroke` задаётся здесь, а не берётся из набора: в интерфейсе значок наследует
+ * цвет кнопки через `currentColor`, а в документе цвет бирки свой.
+ */
+function iconUp(tool: Tool): string {
+  const shape: IconShape = ICON_PATHS[tool]
+  const dot =
+    shape.dot === undefined
+      ? ''
+      : `<circle cx="${shape.dot.cx}" cy="${shape.dot.cy}" r="${shape.dot.r}" ` +
+        `fill="currentColor" stroke="none"/>`
+
+  return (
+    `<svg class="tag__icon" viewBox="${ICON_GEOMETRY.viewBox}" ` +
+    `fill="${ICON_GEOMETRY.fill}" stroke="currentColor" ` +
+    `stroke-width="${ICON_GEOMETRY['stroke-width']}" ` +
+    `stroke-linecap="${ICON_GEOMETRY['stroke-linecap']}" ` +
+    `stroke-linejoin="${ICON_GEOMETRY['stroke-linejoin']}" ` +
+    `aria-hidden="true">${dot}<path d="${shape.d}"/></svg>`
+  )
+}
 
 /**
  * Картинка места правки — или честные слова вместо неё.
@@ -140,94 +146,85 @@ const COLUMN_PX = 652
  * недоделанный отчёт, а исключение записи из документа молча потеряло бы
  * правку заказчика. Тот же принцип, что у уехавших якорей.
  *
- * ── Масштабирование и обрезка ───────────────────────────────────────────────
+ * ── Окно показа, а не весь кадр ─────────────────────────────────────────────
  *
- * Кадр снят во всю ширину страницы и в натуральную величину; ужимается он
- * ЗДЕСЬ — только отчёт знает ширину своей колонки. Ужимается почти всегда
- * и примерно вдвое: окно рецензента шире печатной колонки. Текст на картинке
- * от этого мелкий, и это осознанный обмен — картинка отвечает на вопрос
- * «ГДЕ это на странице», а «что именно исправить» стоит строками «Было/Стало»
- * прямо под ней, набранными в полный размер.
+ * Кадр снят во всю ширину страницы и в натуральную величину; что из него видно
+ * и в каком масштабе — считает `windowOf`, и только отчёт знает ширину своей
+ * колонки. Обрезка идёт по ОБЕИМ осям вокруг якоря: колонка места в описи
+ * узкая, и без горизонтальной обрезки масштаб падает до ≈0.17, а вёрстка
+ * в превью становится серым пятном.
  *
- * По вертикали показывается ПОЛОСА вокруг якоря, а не весь кадр: кадр во всю
- * ширину это секция целиком, и место правки занимает в ней малую часть.
+ * ── Метка лежит СНАРУЖИ масштабируемого узла ────────────────────────────────
  *
- * Метка лежит ВНУТРИ масштабируемого узла и едет вместе с картинкой одним
- * преобразованием — потому её геометрия и считается в пикселях НЕСЖАТОГО
- * кадра, в тех же, что полоса.
+ * Внутри узла её рамка в 2 px ужималась бы вместе с картинкой и на печати
+ * исчезала. Снаружи рамка остаётся настоящими 2 px, а на своём месте метку
+ * держат проценты окна — см. шапку `mark.ts`.
  */
 function placeOf(entry: Entry, number: number, cutout: Cutout | null): string {
   if (cutout === null) {
-    return `<p class="place--none">Показать это место картинкой не удалось. Ищите по адресу страницы и тексту ниже.</p>`
+    return `<p class="place--none">Картинки этого места нет.</p>`
   }
 
-  const scale = Math.min(1, COLUMN_PX / cutout.width)
+  const show = windowOf(cutout, PLACE_PX)
   const round = (value: number): number => Math.round(value * 1000) / 1000
-  // Коробка ростом с ПОЛОСУ, а не с кадром: кадр это секция целиком, и место
-  // правки в ней занимает малую часть.
-  const boxStyle = `width:${Math.round(cutout.width * scale)}px;height:${Math.round(cutout.band.h * scale)}px`
+
+  // Коробка ростом с ОКНО, а не с кадром, и высота у неё производная: фиксируй
+  // мы её числом — широкое окно приехало бы обрезанным, а узкое оставило бы
+  // пустое поле под картинкой.
+  const boxStyle =
+    `width:${Math.round(show.w * show.scale)}px;` + `height:${Math.round(show.h * show.scale)}px`
+
   // Порядок преобразований именно такой. `scale` идёт первым, `translate`
-  // вторым: так сдвиг задаётся в пикселях НЕСЖАТОГО кадра — тех самых, в которых
-  // посчитаны и полоса, и `anchorBox` метки, — и обе величины остаются в одной
-  // системе координат. Поменяй порядок, и сдвиг пришлось бы делить на масштаб
-  // в двух местах, а метка разъехалась бы с картинкой при первой же правке.
+  // вторым: так сдвиг задаётся в пикселях НЕСЖАТОГО кадра — тех самых,
+  // в которых посчитаны и окно, и `anchorBox` метки, — и обе величины остаются
+  // в одной системе координат. Поменяй порядок, и сдвиг пришлось бы делить
+  // на масштаб в двух местах.
   const shotStyle =
     `width:${cutout.width}px;height:${cutout.height}px;` +
-    `transform:scale(${round(scale)}) translateY(${round(-cutout.band.y)}px)`
+    `transform:scale(${round(show.scale)}) translate(${round(-show.x)}px,${round(-show.y)}px)`
 
   return [
     `<div class="place" style="${boxStyle}">`,
     `<div class="place__shot" style="${shotStyle}">`,
     cutout.html,
-    markUp(entry, number, cutout),
     `</div>`,
+    markUp(entry, number, cutout, show),
     `</div>`,
   ].join('')
 }
 
-/** Одна запись документа. */
-function entryBlock(input: ReportInput, entry: Entry): string {
+/**
+ * Одна строка описи: бирка, место, содержание правки.
+ *
+ * Пустые части не рисуются вовсе. Пустой абзац на бумаге неотличим от лишнего
+ * отступа, и читатель принял бы его за потерянный текст.
+ */
+function rowOf(input: ReportInput, entry: Entry): string {
   const number = input.numbers.get(entry.id) ?? 0
-  const place = placeOf(entry, number, input.cutoutOf(entry.id))
-  const rows: string[] = []
+  const line = lineOf(entry, input.doc)
 
-  if (entry.type === 'text-override') {
-    rows.push(row('Было', entry.was))
-    rows.push(row('Стало', plainHtml(entry.now, input.doc)))
-  } else if (entry.type === 'style-wish') {
-    rows.push(row('Текст', entry.was))
-    rows.push(row('Оформление', styleWords(entry.style)))
-    if (entry.now) rows.push(row('Замечание', plainHtml(entry.now, input.doc)))
-  } else {
-    rows.push(row('Здесь', entry.was))
-    rows.push(row('Замечание', entry.now))
-  }
+  const icon = line.tool === null ? '' : iconUp(line.tool)
+  // Вид и маршрут стоят одной строкой: это два ответа на один вопрос «что и где»,
+  // и разносить их значило бы занять две строки под четыре слова.
+  const head = [line.kind, line.route].filter((part) => part !== '').join(' · ')
 
-  // Пожелание оформления у правки текста — ОТДЕЛЬНОЙ помеченной строкой.
-  // Иначе оно утонет в разделе, про который документ говорит «сделают без вас».
-  if (entry.type === 'text-override' && hasStyleWish(entry)) {
-    rows.push(
-      `<div class="row row--person"><div class="row__label">Требует решения</div>` +
-        `<div class="row__value">Оформление: ${escapeHtml(styleWords(entry.style))}</div></div>`,
-    )
-  }
+  const parts = [
+    head === '' ? '' : `<p class="edit__head">${escapeHtml(head)}</p>`,
+    line.was === '' ? '' : `<p class="edit__was">${escapeHtml(line.was)}</p>`,
+    line.now === '' ? '' : `<p class="edit__now">${escapeHtml(line.now)}</p>`,
+    // Пожелание по размеру и цвету — ОТДЕЛЬНОЙ третьей строкой. Подмешать его
+    // в «стало» значило бы потерять один из двух фактов записи: правка текста
+    // с пожеланием несёт оба сразу.
+    line.styleWish === '' ? '' : `<p class="edit__wish">${escapeHtml(line.styleWish)}</p>`,
+  ]
 
   return [
-    `<article class="entry">`,
-    `<div class="entry__no">${number}</div>`,
-    `<div class="entry__body">`,
-    place,
-    `<div class="rows">${rows.join('')}</div>`,
-    `</div>`,
-    `</article>`,
+    `<tr class="row">`,
+    `<td class="row__tag"><span class="tag">${icon}<b class="tag__no">${number}</b></span></td>`,
+    `<td class="row__place">${placeOf(entry, number, input.cutoutOf(entry.id))}</td>`,
+    `<td class="row__edit">${parts.join('')}</td>`,
+    `</tr>`,
   ].join('')
-}
-
-function row(label: string, value: string): string {
-  return (
-    `<div class="row"><div class="row__label">${escapeHtml(label)}</div>` +
-    `<div class="row__value">${escapeHtml(value)}</div></div>`
-  )
 }
 
 /**
@@ -254,63 +251,78 @@ function row(label: string, value: string): string {
  *
  * Строка появляется только при полном отсутствии картинок. Одна-две записи
  * без вырезки среди прочих — это штатная деградация, и объяснять её незачем.
+ *
+ * ── Причина названа, выход — нет ────────────────────────────────────────────
+ *
+ * Прежняя версия заканчивалась указанием: «откройте страницу, к которой
+ * относятся правки, и напечатайте отчёт с неё». Указание ушло вместе с прочими:
+ * документ отражает правки, а не распоряжается читателем. Причина осталась —
+ * без неё пустая колонка мест читается как поломка, и это проверено на живом
+ * человеке, решившем, что кнопка не работает.
  */
 function noShots(): string {
   return (
-    `<div class="callout callout--warn">` +
-    `<b>В этом документе нет картинок мест.</b> Так бывает, когда все правки ` +
-    `сделаны на других страницах прототипа, а также когда вёрстка на странице ` +
-    `сменилась или показать место картинкой не удалось. Правки от этого ` +
-    `не теряются — они все ниже, с адресом страницы и текстом. Чтобы картинки ` +
-    `появились, откройте страницу, к которой относятся правки, и напечатайте ` +
-    `отчёт с неё.` +
+    `<div class="note">` +
+    `<b>В этом документе нет картинок мест.</b> Так бывает, когда правки ` +
+    `сделаны на других страницах, а также когда вёрстка на странице сменилась ` +
+    `или показать место картинкой не удалось. Сами правки на месте — они все ` +
+    `ниже, с адресом страницы и текстом.` +
     `</div>`
   )
-}
-
-/** Раздел с группировкой по страницам. Пустой раздел не рисуется вовсе. */
-function section(input: ReportInput, title: string, entries: readonly Entry[]): string {
-  if (entries.length === 0) return ''
-
-  const groups = groupByRoute(entries).map(
-    (group) =>
-      `<section class="page"><h3 class="page__route">${escapeHtml(group.route)}</h3>` +
-      group.entries.map((entry) => entryBlock(input, entry)).join('') +
-      `</section>`,
-  )
-
-  return `<section class="part"><h2 class="part__title">${escapeHtml(title)}</h2>${groups.join('')}</section>`
 }
 
 /**
- * Рамка с именем файла обмена.
+ * Таблица описи целиком.
  *
- * Это ЕДИНСТВЕННОЕ смягчение известного риска: менеджер отправляет
- * разработчику один читаемый документ, потому что тот выглядит достаточным,
- * — и применять правки становится нечем. Поэтому документ называет свой файл
- * по имени и говорит словами, откуда берутся правки.
+ * Шапка `№ · Место · Правка` живёт в `<thead>`, а не первой строкой `<tbody>`,
+ * и это не украшение: браузеры повторяют `<thead>` на каждом печатном листе.
+ * Опись из десятка правок уезжает на второй лист, и там колонки без подписей
+ * пришлось бы опознавать по памяти.
  */
-function callout(fileName: string | null): string {
-  if (fileName === null) {
-    return (
-      `<div class="callout callout--warn">` +
-      `<b>Файл с правками ещё не выгружен.</b> Откройте «Калька» на прототипе, ` +
-      `нажмите «Экспорт» и отправьте скачанный файл вместе с этим документом: ` +
-      `правки текста применяются из него, а не из этого документа.` +
-      `</div>`
-    )
-  }
-
-  return (
-    `<div class="callout">` +
-    `Правки текста применяются из файла <b>${escapeHtml(fileName)}</b> — ` +
-    `отправьте его вместе с этим документом. Этот документ показывает, ` +
-    `<i>что</i> и <i>где</i> исправить; сами правки берутся из файла.` +
-    `</div>`
-  )
+function listUp(input: ReportInput): string {
+  return [
+    `<table class="list">`,
+    `<thead><tr><th class="row__tag">№</th>`,
+    `<th class="row__place">Место</th><th class="row__edit">Правка</th></tr></thead>`,
+    `<tbody>`,
+    input.entries.map((entry) => rowOf(input, entry)).join(''),
+    `</tbody></table>`,
+  ].join('')
 }
 
-/** Печатные стили документа. Внешних адресов нет: всё внутри. */
+/**
+ * Печатные стили документа. Внешних адресов нет: всё внутри.
+ *
+ * ── Таблица, а не карточки ──────────────────────────────────────────────────
+ *
+ * У карточек шапка была не нужна: подпись стояла у каждого поля. У описи
+ * подписи вынесены в шапку таблицы и печатаются один раз, а `<thead>` браузеры
+ * повторяют на каждом листе — набор из десятка правок уезжает на второй лист,
+ * и там колонки без подписей опознавать нечем.
+ *
+ * `table-layout: fixed` обязателен: без него браузер раздаёт ширины по
+ * содержимому, колонка места разъезжается с `PLACE_PX`, и превью, посчитанное
+ * под 240 px, встаёт в колонку другой ширины.
+ *
+ * ── `break-inside` переехал с карточки на СТРОКУ ────────────────────────────
+ *
+ * Половина правки на развороте нечитаема, а искать её продолжение читатель
+ * не обязан. На `<tr>` это правило браузеры чтут хуже, чем на блочном элементе:
+ * если строка всё-таки рвётся, раскладку придётся делать сеткой из блоков,
+ * потеряв повтор шапки. Проверяется замером на живом прототипе, а не здесь.
+ *
+ * ── Метка теперь СНАРУЖИ масштабируемого узла ───────────────────────────────
+ *
+ * Её положение и размер приходят в процентах окна (`mark.ts`), а рамка, кружок
+ * указателя и номер задаются ЗДЕСЬ в настоящих печатных пикселях. Раньше они
+ * задавались в пикселях несжатого кадра и ужимались вместе с картинкой: при
+ * масштабе ≈0.1 рамка в 2 px печаталась как 0.2 px и исчезала.
+ *
+ * Кружок указателя от этого пришлось уменьшить с 20 px до 12. Двадцать
+ * ужимаемых пикселей на кадре в 1440 px — это ≈1.4% ширины превью; те же
+ * двадцать настоящих в колонке 240 px — уже ≈8%, и метка накрыла бы собой
+ * то место, на которое указывает.
+ */
 function styles(fontFaces: readonly string[]): string {
   return `<style>
 ${fontFaces.join('\n')}
@@ -327,57 +339,59 @@ body {
 .head__title { margin: 0 0 6px; font-size: 17pt; }
 .head__meta { margin: 0; color: #4a5160; font-size: 9.5pt; }
 .head__meta span + span::before { content: " · "; }
-.callout {
-  border: 1px solid #16181d; border-left-width: 4px;
-  padding: 9px 12px; margin: 0 0 18px; font-size: 10pt;
+.note {
+  border: 1px solid #c9ced8; border-left-width: 3px;
+  padding: 8px 11px; margin: 0 0 16px; font-size: 10pt; color: #4a5160;
 }
-.callout--warn { border-color: #8a5a00; background: #fff6e5; }
-.part { margin: 0 0 20px; break-inside: auto; }
-.part__title {
-  font-size: 13pt; margin: 0 0 4px;
-  border-bottom: 1px solid #c9ced8; padding-bottom: 4px;
+.list { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.list th {
+  text-align: left; vertical-align: bottom; padding: 0 10px 5px 0;
+  font-size: 8.5pt; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  color: #4a5160; border-bottom: 1.5px solid #16181d;
 }
-.page { margin: 12px 0 0; }
-.page__route { font-size: 10pt; color: #4a5160; font-weight: 500; margin: 0 0 6px; }
-/* Запись не разрывается между страницами: половина правки на развороте
-   нечитаема, а искать её продолжение читатель не обязан. */
-.entry { display: flex; gap: 10px; margin: 0 0 14px; break-inside: avoid; page-break-inside: avoid; }
-.entry__no {
-  flex: 0 0 26px; height: 26px; border-radius: 50%;
-  background: #16181d; color: #fff; font-weight: 600; font-size: 11pt;
-  display: flex; align-items: center; justify-content: center;
-}
-.entry__body { flex: 1 1 auto; min-width: 0; }
-/* Кадр ужимается ЗДЕСЬ, а не при съёмке: только документ знает ширину своей
-   колонки. Метка ужимается вместе с картинкой одним преобразованием. */
+/* Строка не разрывается между листами: половина правки на развороте нечитаема. */
+.row { break-inside: avoid; page-break-inside: avoid; }
+.row > td { vertical-align: top; padding: 9px 10px 9px 0; border-top: 1px solid #dfe3ea; }
+.row > td:last-child { padding-right: 0; }
+.row__tag { width: 36px; }
+.row__place { width: 240px; }
+/* Бирка: значок инструмента и номер записи. Тот же номер стоит у метки
+   на картинке и в списке разбора на экране — это единственная ниточка
+   между бумагой и живой страницей. */
+.tag { display: flex; align-items: center; gap: 3px; color: #16181d; }
+.tag__icon { display: block; width: 13px; height: 13px; }
+.tag__no { font-size: 11pt; font-weight: 600; }
+/* Кадр ужимает документ, а не съёмка: ширину своей колонки знает только он.
+   Метка лежит СНАРУЖИ ужимаемого узла и живёт в процентах окна. */
 .place {
-  position: relative; overflow: hidden; margin: 0 0 8px;
-  border: 1px solid #c9ced8; border-radius: 4px; max-width: 100%;
+  position: relative; overflow: hidden; max-width: 100%;
+  border: 1px solid #c9ced8; border-radius: 3px;
 }
 .place__shot { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
 .place--none {
-  margin: 0 0 8px; padding: 7px 10px;
-  border: 1px dashed #c9a24a; border-radius: 4px;
-  color: #8a5a00; background: #fff6e5; font-size: 9.5pt;
+  margin: 0; padding: 6px 8px; font-size: 9pt; color: #4a5160;
+  border: 1px dashed #c9ced8; border-radius: 3px;
 }
 .mark { position: absolute; box-sizing: border-box; }
-.mark--rect { border: 2px solid #d92d20; border-radius: 3px; }
+.mark--rect { border: 2px solid #d92d20; border-radius: 2px; }
 .mark--point {
-  width: 20px; height: 20px; margin: -10px 0 0 -10px;
+  width: 12px; height: 12px; margin: -6px 0 0 -6px;
   border-radius: 50%; border: 2px solid #d92d20; background: rgba(217,45,32,.18);
 }
 .mark__no {
-  position: absolute; top: -11px; left: -11px;
-  min-width: 20px; height: 20px; border-radius: 10px;
-  background: #d92d20; color: #fff; font: 600 10px/20px sans-serif;
-  text-align: center; padding: 0 4px;
+  position: absolute; top: -8px; left: -8px;
+  min-width: 14px; height: 14px; border-radius: 7px; padding: 0 3px;
+  background: #d92d20; color: #fff; font: 600 9px/14px sans-serif;
+  text-align: center;
 }
-.rows { font-size: 10pt; }
-.row { display: flex; gap: 8px; padding: 3px 0; border-top: 1px solid #eceef2; }
-.row__label { flex: 0 0 104px; color: #4a5160; }
-.row__value { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
-.row--person .row__label { color: #8a5a00; font-weight: 600; }
-.row--person .row__value { color: #8a5a00; }
+.row__edit p { margin: 0; overflow-wrap: anywhere; }
+/* Вид и маршрут — служебная строка, набрана мельче содержания правки. */
+.edit__head { padding-bottom: 3px; font-size: 9pt; color: #4a5160; }
+/* «Было» серым, «стало» чёрным: какая строка исходная, а какая новая, должно
+   читаться без подписей — подписей у описи и нет. */
+.edit__was { font-size: 10pt; color: #6b7280; }
+.edit__now { font-size: 10pt; color: #16181d; }
+.edit__wish { padding-top: 2px; font-size: 9.5pt; color: #4a5160; }
 .empty { color: #4a5160; }
 </style>`
 }
@@ -396,14 +410,21 @@ body {
 export function buildReport(input: ReportInput): string {
   const { entries } = input
 
-  const forPerson = entries.filter(needsPerson)
-  const forAgent = entries.filter((entry) => !needsPerson(entry))
   const withShot = entries.filter((entry) => input.cutoutOf(entry.id) !== null).length
+
+  // Счёт по ИНСТРУМЕНТАМ, а не по адресату правки: документ никого ни к чему
+  // не обязывает, и журнал не имеет права утверждать обратное. Ни текстов
+  // правок, ни адреса сайта, ни имени файла сюда не уходит — только количества.
+  const tools = entries.map(toolOf)
+  const byTool = {
+    текст: tools.filter((tool) => tool === 'text').length,
+    область: tools.filter((tool) => tool === 'area').length,
+    указатель: tools.filter((tool) => tool === 'point').length,
+  }
 
   log.debug('сборка отчёта', {
     записей: entries.length,
-    требуютРешения: forPerson.length,
-    правокТекста: forAgent.length,
+    ...byTool,
     сКартинкой: withShot,
     безКартинки: entries.length - withShot,
   })
@@ -420,30 +441,38 @@ export function buildReport(input: ReportInput): string {
   // из продукта убран.
   const meta = [`<span>${escapeHtml(input.site)}</span>`, `<span>${formatMoment(input.now)}</span>`]
   meta.push(
-    `<span>${entries.length} ${plural(entries.length, 'правка', 'правки', 'правок')}, ` +
-      `из них ${forPerson.length} ${plural(forPerson.length, 'требует', 'требуют', 'требуют')} решения</span>`,
+    `<span>${entries.length} ${plural(entries.length, 'правка', 'правки', 'правок')}</span>`,
   )
+
+  // Имя файла обмена — НЕЙТРАЛЬНОЙ строкой в ряду с адресом и датой, а не рамкой
+  // с указанием, что с ним делать. Рамка была единственным смягчением известного
+  // риска «менеджер отправит разработчику один PDF, и применять правки станет
+  // нечем»; смягчение снято сознательно, потому что цена ему — документ, который
+  // командует читателем. Имя при этом обязано остаться: без него файл на диске
+  // не с чем сопоставить.
+  //
+  // `null` — набор ещё не выгружали. Строки тогда просто нет: названное имя
+  // несуществующего файла хуже отсутствия имени, потому что выглядит достоверно.
+  if (input.fileName !== null) meta.push(`<span>${escapeHtml(input.fileName)}</span>`)
 
   const body = [
     `<div class="head">`,
-    `<h1 class="head__title">Правки к прототипу</h1>`,
+    // «Правки», а не «Правки к прототипу»: слово «прототип» — из словаря тех,
+    // кто делает продукт, а не тех, кто его правит.
+    `<h1 class="head__title">Правки</h1>`,
     `<p class="head__meta">${meta.join('')}</p>`,
     `</div>`,
-    callout(input.fileName),
     // Только при ПОЛНОМ отсутствии картинок: одна-две записи без вырезки среди
     // прочих — штатная деградация, объяснять её незачем.
     entries.length > 0 && withShot === 0 ? noShots() : '',
-    section(input, 'Требует решения', forPerson),
-    section(input, 'Правки текста', forAgent),
-    entries.length === 0 ? `<p class="empty">Правок нет.</p>` : '',
+    entries.length === 0 ? `<p class="empty">Правок нет.</p>` : listUp(input),
   ].join('')
 
-  const html = `<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Правки к прототипу</title>${styles(fontFaces)}</head><body>${body}</body></html>`
+  const html = `<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Правки</title>${styles(fontFaces)}</head><body>${body}</body></html>`
 
   log.info('отчёт собран', {
     записей: entries.length,
-    требуютРешения: forPerson.length,
-    правокТекста: forAgent.length,
+    ...byTool,
     знаков: html.length,
   })
 

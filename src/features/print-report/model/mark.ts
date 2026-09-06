@@ -1,6 +1,7 @@
 import { pointFromBox, rectFromBox } from 'shared/lib/geometry'
 import type { Entry } from 'shared/model/format'
 import type { Cutout } from 'shared/model/layer'
+import type { ShowWindow } from './window'
 
 /*
  * Метка поверх вырезки.
@@ -22,12 +23,24 @@ import type { Cutout } from 'shared/model/layer'
  * У узких кадров правок текста `anchorBox` совпадает со всем кадром, и формула
  * та же — то есть частный случай обрабатывается общим правилом, а не веткой.
  *
- * ── Почему в НЕСЖАТЫХ пикселях ──────────────────────────────────────────────
+ * ── Почему метка СНАРУЖИ масштабируемого узла и считается в процентах ───────
  *
- * Кадр ужимает документ отчёта под ширину своей колонки. Метка лежит внутри
- * того же масштабируемого узла и ужимается вместе с картинкой одним
- * преобразованием — значит считать её надо в координатах кадра до сжатия.
- * Считай мы в сжатых, масштаб пришлось бы применять дважды.
+ * Раньше метка лежала внутри узла с картинкой и ужималась вместе с ним одним
+ * преобразованием, поэтому и считалась в пикселях несжатого кадра. В колонке
+ * описи шириной 240 px масштаб доходит до ≈0.1, и на этом приём ломается:
+ * рамка метки в 2 px печатается как 0.2 px и с бумаги исчезает совсем.
+ * Оставалась бы картинка с номером, но без указания места — то есть метка,
+ * которая ничего не отмечает.
+ *
+ * Поэтому метка переезжает НАРУЖУ, в коробку превью, и её геометрия считается
+ * в процентах ОКНА показа. Проценты не зависят от масштаба вовсе: метка стоит
+ * на своём месте при любом сжатии, а её рамка и номер остаются настоящими
+ * печатными пикселями. Размеры самой метки задаются документом
+ * (`report.ts`, правила `.mark*`) — здесь только положение.
+ *
+ * Считается по-прежнему от `anchorBox` в координатах несжатого кадра, а перевод
+ * в проценты идёт последним действием: обе величины до перевода живут в одной
+ * системе координат с окном, и вычесть начало окна можно ровно один раз.
  */
 
 /** Прямоугольник метки в пикселях несжатого кадра. `null` — рисовать нечего. */
@@ -55,23 +68,39 @@ function boxOf(entry: Entry, cutout: Cutout): DOMRect | null {
  * место она показывает и без рамки, а выдуманная метка увела бы читателя
  * не туда.
  */
-export function markUp(entry: Entry, number: number, cutout: Cutout): string {
+export function markUp(
+  entry: Entry,
+  number: number,
+  cutout: Cutout,
+  show: ShowWindow,
+): string {
   const box = boxOf(entry, cutout)
   if (box === null) return ''
 
+  // Вырожденное окно: делить на ноль нечем, и метка в пустом превью всё равно
+  // ничего не отметит. Та же развилка, что у вырожденного якоря выше.
+  if (show.w === 0 || show.h === 0) return ''
+
   const { anchorBox } = cutout
-  const left = Math.round(anchorBox.x + box.x)
-  const top = Math.round(anchorBox.y + box.y)
+  // Два знака после запятой: при колонке в 240 px сотая доля процента — это
+  // 0.024 px, то есть заведомо меньше того, что видно на бумаге. Больше знаков
+  // только раздули бы документ.
+  const pct = (value: number, of: number): number => Math.round((value / of) * 10000) / 100
+
+  const left = pct(anchorBox.x + box.x - show.x, show.w)
+  const top = pct(anchorBox.y + box.y - show.y, show.h)
   const label = `<span class="mark__no">${number}</span>`
 
+  // У указателя своих размеров нет: он точка, и его кружок задан документом
+  // в печатных пикселях. Здесь только координата этой точки.
   if (entry.point) {
-    return `<div class="mark mark--point" style="left:${left}px;top:${top}px">${label}</div>`
+    return `<div class="mark mark--point" style="left:${left}%;top:${top}%">${label}</div>`
   }
 
-  const width = Math.round(box.width)
-  const height = Math.round(box.height)
+  const width = pct(box.width, show.w)
+  const height = pct(box.height, show.h)
   return (
     `<div class="mark mark--rect" ` +
-    `style="left:${left}px;top:${top}px;width:${width}px;height:${height}px">${label}</div>`
+    `style="left:${left}%;top:${top}%;width:${width}%;height:${height}%">${label}</div>`
   )
 }
