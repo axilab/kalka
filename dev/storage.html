@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Калька — хранение и экспорт</title>
+    <style>
+      body {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 32px 16px 96px;
+        font-family: Georgia, serif;
+        line-height: 1.6;
+      }
+      nav a {
+        margin-right: 16px;
+      }
+      nav a[aria-current='page'] {
+        font-weight: 700;
+        text-decoration: none;
+      }
+      .card {
+        padding: 16px;
+        margin: 16px 0;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+      }
+      .hint {
+        color: #6b7280;
+        font-size: 14px;
+      }
+      button {
+        font: inherit;
+        padding: 6px 12px;
+        margin: 0 6px 6px 0;
+      }
+      /* Блок стенда: он управляет чужим хранилищем и обязан отличаться от
+         содержимого прототипа, чтобы его не начали править «Калькой». */
+      .tools {
+        padding: 16px;
+        margin: 24px 0;
+        background: #f6f7f9;
+        border: 2px dashed #b3b8c2;
+        border-radius: 8px;
+      }
+      .tools h2 {
+        margin-top: 0;
+        font-size: 18px;
+      }
+      #dump {
+        max-height: 220px;
+        overflow: auto;
+        padding: 8px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        line-height: 1.4;
+        white-space: pre-wrap;
+        word-break: break-all;
+        background: #fff;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+      }
+      ol.steps {
+        font-size: 15px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1 id="stand-title">Стенд хранения и экспорта</h1>
+
+    <nav>
+      <a href="?kalka&page=tariffs">Тарифы</a>
+      <a href="?kalka&page=support">Поддержка</a>
+    </nav>
+
+    <p class="hint">
+      Что проверяется на этой странице: правки переживают перезагрузку и закрытие
+      вкладки (FR-23, FR-24); счётчик и состояние «не экспортировано» видны во всех
+      режимах (FR-25); браузер переспрашивает при закрытии вкладки с невыгруженными
+      правками (FR-26); кнопка «Экспорт» показывает список отправляемого и скачивает
+      один файл обмена с адресом сайта и датой в имени (FR-27, FR-28, FR-29).
+      Читаемый вывод для человека даёт кнопка «Отчёт» — печатаемый документ,
+      он проверяется на отдельном стенде <code>dev/report.html</code>.
+    </p>
+
+    <!-- Содержимое под все три инструмента: абзацы под «Текст», карточки под
+         «Область», ссылки и кнопки под «Указатель». -->
+    <h2>Чем занимаемся</h2>
+    <p id="lead">
+      Проектирование, изготовление и монтаж подъёмного оборудования для
+      промышленных объектов. Работаем с проектной документацией заказчика и
+      с собственными типовыми решениями.
+    </p>
+    <p id="second">
+      Мостовые краны, козловые краны, кран-балки и тали.
+      Грузоподъёмность от полутонны до двадцати тонн. Обследование,
+      ремонт и модернизация ранее установленного оборудования.
+    </p>
+
+    <div class="card">
+      <h3 id="card-title">Монтаж под ключ</h3>
+      <p id="card-text">
+        Монтаж ведём собственными бригадами. Сроки поставки зависят от загрузки
+        производства и согласуются до подписания договора.
+      </p>
+      <p>
+        <a id="card-link" href="#">Подробнее об условиях</a>
+      </p>
+    </div>
+
+    <div class="card">
+      <h3>Гарантия</h3>
+      <p id="warranty">
+        Гарантия на смонтированное оборудование — двадцать четыре месяца
+        с даты подписания акта.
+      </p>
+    </div>
+
+    <main></main>
+
+    <!-- ─────────────────────────────────────────────────────────────────────
+         Управление хранилищем носителя.
+
+         Все кнопки ниже работают с localStorage НАПРЯМУЮ. Так можно: это код
+         страницы стенда, а не код виджета. Иначе ветки отказа — испорченное
+         содержимое, снимок будущей версии, кончившаяся квота — не будут
+         пройдены ни разу до встречи с заказчиком.
+    ────────────────────────────────────────────────────────────────────── -->
+    <div class="tools">
+      <h2>Стенд: хранилище</h2>
+
+      <p>
+        <button id="break" type="button">Испортить хранилище</button>
+        <button id="future" type="button">Подсунуть будущую версию</button>
+        <button id="fill" type="button">Забить квоту</button>
+      </p>
+      <p>
+        <button id="clear" type="button">Очистить хранилище Кальки</button>
+        <button id="unfill" type="button">Освободить квоту</button>
+        <button id="show" type="button">Показать снимок</button>
+      </p>
+
+      <p class="hint" id="tools-report">— готово к работе</p>
+      <div id="dump">Снимок не запрашивался.</div>
+
+      <h3>Порядок проверки</h3>
+      <ol class="steps">
+        <li>
+          <b>Правки переживают перезагрузку.</b> Исправьте абзац инструментом
+          «Текст», обведите карточку «Областью», поставьте «Указатель» на ссылку.
+          Перезагрузите страницу: метки на местах, текст заменён, счётчик показывает
+          то же число.
+        </li>
+        <li>
+          <b>Прокрутка не пишет в хранилище.</b> Откройте консоль, прокрутите
+          страницу и походите по ссылкам «Тарифы» / «Поддержка». Строк
+          <code>[kalka:entry:persist] снимок записан</code> при этом появляться
+          не должно.
+        </li>
+        <li>
+          <b>Удаление тоже переживает перезагрузку.</b> Удалите одно замечание,
+          перезагрузите: его нет ни на странице, ни в снимке (кнопка «Показать
+          снимок»).
+        </li>
+        <li>
+          <b>Экспорт.</b> Нажмите «Экспорт» — откроется список того, что уйдёт.
+          Введите имя, нажмите «Скачать». Файлов должно быть <b>два</b>:
+          <code>.json</code> и <code>.md</code>. Вопрос Chrome «Разрешить сайту
+          скачивать несколько файлов?» — ожидаемое поведение браузера, а не дефект.
+        </li>
+        <li>
+          <b>Состояние сменилось.</b> После скачивания в ящике разбора —
+          «N правок, выгружены в ЧЧ:ММ».
+          Сделайте ещё одну правку — снова «не экспортировано». Перезагрузите
+          страницу: состояние сохранилось.
+        </li>
+        <li>
+          <b>Вопрос при закрытии.</b> С невыгруженными правками закройте вкладку —
+          браузер переспросит. После экспорта закрытие проходит молча. При пустом
+          наборе — тоже молча.
+        </li>
+        <li>
+          <b>Демонтаж.</b> Выполните в консоли
+          <code>window.__kalka.unmount()</code>: страница возвращается к исходной,
+          закрытие вкладки после этого проходит молча.
+        </li>
+        <li>
+          <b>Испорченное содержимое.</b> «Испортить хранилище» → перезагрузка:
+          виджет поднимается с пустым набором, а испорченное лежит в
+          <code>kalka:entries:broken</code> (кнопка «Показать снимок»).
+        </li>
+        <li>
+          <b>Будущая версия.</b> «Подсунуть будущую версию» → перезагрузка:
+          набор пуст, в ящике разбора видно предупреждение, что правки не сохраняются,
+          и снимок в <code>kalka:entries</code> <b>не затёрт</b>.
+        </li>
+        <li>
+          <b>Кончившаяся квота.</b> «Забить квоту» → сделайте новую правку:
+          в ящике разбора появляется видимое предупреждение, а на рейке счётчик
+          меняет вид, — а не только строка в логе.
+          После «Освободить квоту» и новой правки предупреждение уходит.
+        </li>
+      </ol>
+
+      <p class="hint">
+        После экспериментов хранилище стенда стоит чистить кнопкой «Очистить
+        хранилище Кальки»: записи, поданные фикстурами прошлого прогона, иначе
+        всплывут в следующем.
+      </p>
+    </div>
+
+    <script>
+      // Роутер намеренно ванильный: проверяется поведение виджета при клиентской
+      // навигации, а не чужой фреймворк.
+      const PAGES = {
+        tariffs: { title: 'Тарифы', body: 'Домашний, Игровой и Загородный.' },
+        support: { title: 'Поддержка', body: 'Инженер приезжает за два рабочих дня.' },
+      }
+
+      function currentPage() {
+        const name = new URLSearchParams(location.search).get('page')
+        return Object.prototype.hasOwnProperty.call(PAGES, name) ? name : 'tariffs'
+      }
+
+      function draw() {
+        const name = currentPage()
+        const page = PAGES[name]
+        const main = document.querySelector('main')
+        main.textContent = ''
+
+        const heading = document.createElement('h2')
+        heading.textContent = page.title
+        const paragraph = document.createElement('p')
+        paragraph.textContent = page.body
+        main.append(heading, paragraph)
+
+        for (const link of document.querySelectorAll('nav a')) {
+          const target = new URLSearchParams(link.getAttribute('href').slice(1)).get('page')
+          if (target === name) link.setAttribute('aria-current', 'page')
+          else link.removeAttribute('aria-current')
+        }
+      }
+
+      document.querySelector('nav').addEventListener('click', (event) => {
+        const link = event.target.closest('a')
+        if (!link) return
+        event.preventDefault()
+        history.pushState({}, '', link.getAttribute('href'))
+        draw()
+      })
+
+      window.addEventListener('popstate', draw)
+      draw()
+
+      // Ссылка внутри карточки никуда не ведёт: она здесь как мишень для
+      // «Указателя», а уход со страницы посреди проверки только мешает.
+      document.getElementById('card-link').addEventListener('click', (event) => {
+        event.preventDefault()
+      })
+    </script>
+
+    <script>
+      // ── Управление хранилищем ─────────────────────────────────────────────
+      const ENTRIES_KEY = 'kalka:entries'
+      const BROKEN_KEY = 'kalka:entries:broken'
+      const AUTHOR_KEY = 'kalka:author'
+      const FILLER_PREFIX = 'stand:filler:'
+
+      const report = document.getElementById('tools-report')
+      const dump = document.getElementById('dump')
+
+      function say(text) {
+        report.textContent = `— ${text}`
+      }
+
+      document.getElementById('break').addEventListener('click', () => {
+        // Заведомо неразбираемая строка: ни JSON, ни что-либо похожее.
+        localStorage.setItem(ENTRIES_KEY, '{это не JSON, и не притворяется')
+        say('хранилище испорчено — перезагрузите страницу')
+      })
+
+      document.getElementById('future').addEventListener('click', () => {
+        // Снимок версии, которой этот бандл не знает. Виджет обязан его
+        // не читать И не перезаписывать.
+        localStorage.setItem(
+          ENTRIES_KEY,
+          JSON.stringify({ format: 2, exportedAt: null, entries: [], future: 'поле из будущего' }),
+        )
+        say('подсунут снимок format: 2 — перезагрузите страницу')
+      })
+
+      document.getElementById('fill').addEventListener('click', () => {
+        // Мусор пишется до отказа кусками по мегабайту: квота у браузеров
+        // разная, и угадывать её размер бессмысленно.
+        const chunk = 'x'.repeat(512 * 1024)
+        let written = 0
+        try {
+          for (let i = 0; i < 64; i += 1) {
+            localStorage.setItem(`${FILLER_PREFIX}${i}`, chunk)
+            written += 1
+          }
+          say(`записано ${written} кусков, а квота так и не кончилась`)
+        } catch (error) {
+          say(`квота забита на ${written} кусках — сделайте новую правку`)
+        }
+      })
+
+      document.getElementById('unfill').addEventListener('click', () => {
+        let removed = 0
+        for (const key of Object.keys(localStorage)) {
+          if (!key.startsWith(FILLER_PREFIX)) continue
+          localStorage.removeItem(key)
+          removed += 1
+        }
+        say(`освобождено кусков: ${removed} — сделайте новую правку`)
+      })
+
+      document.getElementById('clear').addEventListener('click', () => {
+        let removed = 0
+        for (const key of Object.keys(localStorage)) {
+          if (!key.startsWith('kalka:')) continue
+          localStorage.removeItem(key)
+          removed += 1
+        }
+        say(`снято ключей Кальки: ${removed} — перезагрузите страницу`)
+      })
+
+      document.getElementById('show').addEventListener('click', () => {
+        // Печатается НА СТРАНИЦУ, а не в консоль: по снимку проверяются type,
+        // exportedAt и заглушки полей для агента, и листать его в консоли
+        // неудобно.
+        const parts = []
+        for (const [label, key] of [
+          ['kalka:entries', ENTRIES_KEY],
+          ['kalka:entries:broken', BROKEN_KEY],
+          ['kalka:author', AUTHOR_KEY],
+        ]) {
+          const raw = localStorage.getItem(key)
+          if (raw === null) {
+            parts.push(`── ${label} ──\n(пусто)`)
+            continue
+          }
+          let body = raw
+          try {
+            body = JSON.stringify(JSON.parse(raw), null, 2)
+          } catch {
+            body = `(не разбирается как JSON, ${raw.length} знаков)\n${raw}`
+          }
+          parts.push(`── ${label} ──\n${body}`)
+        }
+        dump.textContent = parts.join('\n\n')
+        say('снимок показан ниже')
+      })
+    </script>
+
+    <script type="module" src="/src/app/index.ts"></script>
+  </body>
+</html>

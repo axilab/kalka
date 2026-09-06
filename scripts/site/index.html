@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Калька — слой правок поверх прототипа</title>
+    <style>
+      body {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 32px 16px 96px;
+        font-family: Georgia, serif;
+        line-height: 1.6;
+        color: #1a1a1a;
+        background: #fff;
+      }
+      code,
+      pre {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 14px;
+      }
+      pre {
+        padding: 12px 16px;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        overflow-x: auto;
+        background: #fafafa;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 8px 12px 8px 0;
+        border-bottom: 1px solid #eee;
+        vertical-align: top;
+      }
+      footer {
+        margin-top: 48px;
+        padding-top: 16px;
+        border-top: 1px solid #eee;
+        font-size: 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Калька</h1>
+    <p>
+      Слой правок поверх прототипа. Заказчик правит тексты и оставляет аннотации
+      прямо на странице, а разработчик получает правки в применимом виде.
+      Тексты не меняются в источнике — они подменяются при отображении.
+    </p>
+
+    <h2>Подключение</h2>
+    <p>Одна строка в разметке страницы:</p>
+    <pre><code>&lt;script src="https://axilab.github.io/kalka/kalka.js"&gt;&lt;/script&gt;</code></pre>
+    <p>
+      По этому адресу всегда лежит последняя сборка из ветки <code>main</code>.
+      Версия не закрепляется: прототип, подключённый сегодня, завтра получит
+      новую сборку.
+    </p>
+
+    <h2>Включение</h2>
+    <p>
+      Виджет молчит, пока его не включили явно, — забытый скрипт не уезжает
+      в прод рабочим.
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th>Адрес</th>
+          <th>Что происходит</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>?kalka</code></td>
+          <td>включает и запоминает: виджет переживёт переход по внутренним ссылкам</td>
+        </tr>
+        <tr>
+          <td><code>?kalka=0</code>, <code>?kalka=off</code>, <code>?kalka=false</code></td>
+          <td>выключает и забывает</td>
+        </tr>
+        <tr>
+          <td>без параметра</td>
+          <td>решает запомненный признак</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <footer>
+      Исходный код и документация:
+      <a href="https://github.com/axilab/kalka">github.com/axilab/kalka</a>.
+      Лицензия MIT.
+    </footer>
+  </body>
+</html>

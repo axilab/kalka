@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Калька — метки области и указателя</title>
+    <style>
+      body {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 32px 16px 96px;
+        font-family: Georgia, serif;
+        line-height: 1.6;
+      }
+      nav a {
+        margin-right: 16px;
+      }
+      nav a[aria-current='page'] {
+        font-weight: 700;
+        text-decoration: none;
+      }
+      .card {
+        padding: 16px;
+        margin: 16px 0;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+      }
+      .hint {
+        color: #6b7280;
+        font-size: 14px;
+      }
+      button {
+        font: inherit;
+        padding: 6px 12px;
+      }
+
+      /* Блок с внутренней прокруткой: проверка capture: true в watchLayout. */
+      .scroller {
+        height: 140px;
+        overflow: auto;
+        padding: 12px;
+        background: #f6f7f9;
+      }
+
+      /*
+        Главная проверка FR-18. Доля обязана сохранить положение рамки внутри
+        блока при смене его ширины; пиксели — не обязаны. На одной ширине верна
+        любая формула, поэтому раскладки две.
+      */
+      #resizable {
+        padding: 12px;
+        background: #eef4ff;
+        transition: width 0.2s;
+      }
+      #resizable.narrow {
+        width: 240px;
+      }
+      #resizable.wide {
+        width: 100%;
+      }
+
+      /* Элемент нулевого размера: ветка captureRect без деления. */
+      #zero {
+        display: block;
+        width: 100%;
+        height: 0;
+        overflow: hidden;
+      }
+
+      /* Масштабированный блок: рамка обязана лечь на фактическую геометрию. */
+      .scaled {
+        transform: scale(0.8);
+        transform-origin: left top;
+        background: #fff7e6;
+      }
+    </style>
+  </head>
+  <body>
+    <h1 id="stand-title">Стенд меток области и указателя</h1>
+
+    <nav>
+      <a href="?kalka&page=tariffs">Тарифы</a>
+      <a href="?kalka&page=support">Поддержка</a>
+    </nav>
+
+    <p class="hint">
+      Что проверяется на этой странице: рисование области и постановка указателя
+      с вводом замечания (FR-13, FR-14); видимость меток поверх вёрстки и открытие
+      замечания по клику (FR-15); удаление замечания вместе с меткой (FR-16);
+      хранение геометрии в долях bounding box (FR-18). Две метки поданы фикстурами
+      заранее — они проверяют восстановление долей отдельно от рисования.
+    </p>
+
+    <!--
+      Длинный текст: страница обязана прокручиваться. Метка обязана ехать вместе
+      с контентом, а не оставаться на экране.
+    -->
+    <h2>Чем занимаемся</h2>
+    <p id="lead">
+      Проектирование, изготовление и монтаж подъёмного оборудования для
+      промышленных объектов. Работаем с проектной документацией заказчика и
+      с собственными типовыми решениями.
+    </p>
+    <p>
+      Мостовые краны, козловые краны, кран-балки и тали.
+      Грузоподъёмность от полутонны до двадцати тонн. Обследование,
+      ремонт и модернизация ранее установленного оборудования.
+    </p>
+    <p>
+      Монтаж ведём собственными бригадами. Сроки поставки зависят от загрузки
+      производства и согласуются до подписания договора. Гарантия на смонтированное
+      оборудование — двадцать четыре месяца.
+    </p>
+
+    <!-- Смена ширины блока: главная проверка FR-18. -->
+    <div class="card">
+      <div id="resizable" class="narrow">
+        Ширина этого блока меняется кнопкой, а рамка обязана остаться на своём месте внутри него.
+      </div>
+      <p>
+        <button id="resize" type="button">Сменить ширину блока</button>
+        <span class="hint">— доля сохраняется, пиксели нет</span>
+      </p>
+    </div>
+
+    <!-- Внутренняя прокрутка: проверка capture: true в watchLayout. -->
+    <div class="card">
+      <div class="scroller" id="scroller">
+        <p id="scrolled">Первая строка прокручиваемого блока.</p>
+        <p>Вторая строка прокручиваемого блока.</p>
+        <p>Третья строка прокручиваемого блока.</p>
+        <p>Четвёртая строка прокручиваемого блока.</p>
+        <p>Пятая строка прокручиваемого блока.</p>
+        <p>Шестая строка прокручиваемого блока.</p>
+        <p>Седьмая строка прокручиваемого блока.</p>
+      </div>
+      <span class="hint">— прокрутка внутри блока не отрывает метку от места</span>
+    </div>
+
+    <!-- Скрытие блока: метка исчезает, запись остаётся, статус не «потеряна». -->
+    <div class="card">
+      <div id="hidable">
+        Этот блок прячется кнопкой. Метка на нём обязана исчезнуть, а замечание — остаться
+        в списке и не считаться потерянным.
+      </div>
+      <p>
+        <button id="hide" type="button">Спрятать блок</button>
+      </p>
+    </div>
+
+    <!-- Элемент нулевого размера: ветка captureRect без деления. -->
+    <div class="card">
+      <span id="zero">Элемент нулевой высоты</span>
+      <span class="hint">
+        — выше стоит элемент нулевой высоты: деления на ноль быть не должно ни при
+        захвате, ни при восстановлении
+      </span>
+    </div>
+
+    <!-- Масштабированный блок: рамка ложится на фактическую отрисовку. -->
+    <div class="card scaled">
+      <p id="scaled-text">Этот блок уменьшен масштабированием. Рамка обязана лечь на то, что видно.</p>
+    </div>
+
+    <!-- Ссылка и кнопка: «Указатель» ставит метку и НЕ активирует их. -->
+    <div class="card">
+      <p>
+        <a id="trap-link" href="https://example.com/">Ссылка, по которой переходить нельзя</a>
+      </p>
+      <p>
+        <button id="trap-button" type="button">Кнопка, нажимать которую нельзя</button>
+        <span class="hint" id="trap-report">— ни переход, ни нажатие не срабатывали</span>
+      </p>
+    </div>
+
+    <main></main>
+
+    <script>
+      // Роутер намеренно ванильный: проверяется поведение виджета при клиентской
+      // навигации, а не чужой фреймворк.
+      const PAGES = {
+        tariffs: { title: 'Тарифы', body: 'Домашний, Игровой и Загородный.' },
+        support: { title: 'Поддержка', body: 'Инженер приезжает за два рабочих дня.' },
+      }
+
+      function currentPage() {
+        const name = new URLSearchParams(location.search).get('page')
+        return Object.prototype.hasOwnProperty.call(PAGES, name) ? name : 'tariffs'
+      }
+
+      function draw() {
+        const name = currentPage()
+        const page = PAGES[name]
+        const main = document.querySelector('main')
+        main.textContent = ''
+
+        const heading = document.createElement('h2')
+        heading.textContent = page.title
+        const paragraph = document.createElement('p')
+        paragraph.textContent = page.body
+        main.append(heading, paragraph)
+
+        for (const link of document.querySelectorAll('nav a')) {
+          const target = new URLSearchParams(link.getAttribute('href').slice(1)).get('page')
+          if (target === name) link.setAttribute('aria-current', 'page')
+          else link.removeAttribute('aria-current')
+        }
+      }
+
+      document.querySelector('nav').addEventListener('click', (event) => {
+        const link = event.target.closest('a')
+        if (!link) return
+        event.preventDefault()
+        history.pushState({}, '', link.getAttribute('href'))
+        draw()
+      })
+
+      window.addEventListener('popstate', draw)
+      draw()
+
+      // Узкая ↔ широкая раскладка. Смена класса, а не инлайнового стиля:
+      // так виден и переход, и итоговая ширина.
+      document.getElementById('resize').addEventListener('click', () => {
+        const block = document.getElementById('resizable')
+        const narrow = block.classList.contains('narrow')
+        block.classList.toggle('narrow', !narrow)
+        block.classList.toggle('wide', narrow)
+      })
+
+      const hide = document.getElementById('hide')
+      hide.addEventListener('click', () => {
+        const block = document.getElementById('hidable')
+        const hidden = block.style.display === 'none'
+        block.style.display = hidden ? '' : 'none'
+        hide.textContent = hidden ? 'Спрятать блок' : 'Вернуть блок'
+      })
+
+      // Ловушки: если перехват «Указателя» не сработал, это будет видно словами,
+      // а не по факту ухода со страницы.
+      const report = document.getElementById('trap-report')
+      document.getElementById('trap-button').addEventListener('click', () => {
+        report.textContent = '— ВНИМАНИЕ: кнопка нажалась, перехват не сработал'
+      })
+      document.getElementById('trap-link').addEventListener('click', () => {
+        report.textContent = '— ВНИМАНИЕ: ссылка сработала, перехват не сработал'
+      })
+    </script>
+
+    <script type="module" src="/src/app/index.ts"></script>
+
+    <script type="module">
+      // Фикстуры: две записи типа comment, собранные вручную. Они проверяют
+      // восстановление долей ОТДЕЛЬНО от рисования — то есть даже если
+      // инструменты сломаны, метки на своих местах обязаны быть.
+      //
+      // Поля для агента (path, nearestHeading, контекст) заполнены правдоподобно
+      // и здесь не проверяются: их собирает веха «Машиночитаемость». В записях,
+      // созданных самими инструментами, они пустые — так и задумано.
+      const viewport = { w: 1440, h: 900 }
+      const at = '2026-09-05T10:00:00Z'
+
+      // Маршрут выводится из адреса, а не пишется строкой: стенд обязан работать
+      // по любому пути, каким его отдаст дев-сервер. Параметр kalka в маршрут
+      // не входит по определению (см. currentRoute).
+      const ROUTE = location.pathname
+
+      const ENTRIES = [
+        {
+          // Область на блоке, меняющем ширину. Главная проверка FR-18: доли
+          // 0.1/0.1/0.5/0.6 обязаны дать одну и ту же рамку ВНУТРИ блока
+          // и на узкой, и на широкой раскладке.
+          id: 'area1',
+          type: 'comment',
+          route: ROUTE,
+          path: 'Стенд → блок с меняющейся шириной',
+          tag: 'div',
+          was: 'Ширина этого блока меняется кнопкой, а рамка обязана остаться на своём месте внутри него.',
+          wasHtml: '',
+          now: 'Здесь рамка обязана пережить смену ширины блока.',
+          style: {},
+          nearestHeading: 'Чем занимаемся',
+          contextBefore: 'Монтаж ведём собственными бригадами.',
+          contextAfter: 'Сменить ширину блока',
+          occurrencesOnPage: 0,
+          anchor: {
+            selector: '#resizable',
+            xpath: '/html[1]/body[1]/div[2]/div[1]',
+            snippet:
+              'Ширина этого блока меняется кнопкой, а рамка обязана остаться на своём месте внутри него.',
+            index: 0,
+          },
+          viewport,
+          rect: { x: 0.1, y: 0.1, w: 0.5, h: 0.6 },
+          at,
+        },
+        {
+          // Точка на абзаце в прокручиваемой части страницы: метка обязана ехать
+          // вместе с контентом.
+          id: 'point1',
+          type: 'comment',
+          route: ROUTE,
+          path: 'Стенд → вводный абзац',
+          tag: 'p',
+          was: 'Проектирование, изготовление и монтаж подъёмного оборудования для промышленных объектов. Работаем с проектной документацией заказчика и с собственными типовыми решениями.',
+          wasHtml: '',
+          now: 'Уточнить, что значит «типовые решения».',
+          style: {},
+          nearestHeading: 'Чем занимаемся',
+          contextBefore: 'Чем занимаемся',
+          contextAfter: 'Мостовые краны, козловые краны, кран-балки.',
+          occurrencesOnPage: 0,
+          anchor: {
+            selector: '#lead',
+            xpath: '/html[1]/body[1]/p[2]',
+            snippet: 'Проектирование, изготовление и монтаж подъёмного оборудования',
+            index: 0,
+          },
+          viewport,
+          point: { x: 0.75, y: 0.5 },
+          at,
+        },
+      ]
+
+      // Виджет поднимается на DOMContentLoaded, а модуль-фикстуры выполняется
+      // раньше него: ждём готовности API, а не угадываем момент.
+      function seedWhenReady() {
+        if (window.__kalka && window.__kalka.seed) {
+          window.__kalka.seed(ENTRIES)
+          return
+        }
+        requestAnimationFrame(seedWhenReady)
+      }
+      seedWhenReady()
+    </script>
+  </body>
+</html>

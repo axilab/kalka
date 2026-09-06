@@ -1,0 +1,480 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Калька — контекст для ИИ-агента</title>
+    <style>
+      body {
+        max-width: 760px;
+        margin: 0 auto;
+        padding: 32px 16px 96px;
+        font-family: Georgia, serif;
+        line-height: 1.6;
+      }
+      .menu,
+      .crumbs {
+        display: flex;
+        gap: 16px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      .crumbs {
+        gap: 8px;
+        font-size: 14px;
+        color: #6b7280;
+      }
+      /* Разделитель «хлебных крошек» — генерируемым содержимым: в textContent
+         оно не попадает, и счётчик повторов от него не сбивается. */
+      .crumbs li + li::before {
+        content: '/ ';
+        color: #b3b8c2;
+      }
+      .menu a[aria-current='page'] {
+        font-weight: 700;
+        text-decoration: none;
+      }
+      .row {
+        display: flex;
+        gap: 16px;
+      }
+      .row article {
+        flex: 1;
+        padding: 12px;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+      }
+      .row h3 {
+        margin-top: 0;
+        font-size: 16px;
+      }
+      section {
+        margin: 32px 0;
+      }
+      .hint {
+        color: #6b7280;
+        font-size: 14px;
+      }
+      button {
+        font: inherit;
+        padding: 6px 12px;
+        margin: 0 6px 6px 0;
+      }
+      /* Блок стенда: он читает хранилище и раздаёт подсказки, и обязан
+         отличаться от содержимого прототипа, чтобы его не начали править
+         «Калькой». */
+      .tools {
+        padding: 16px;
+        margin: 24px 0;
+        background: #f6f7f9;
+        border: 2px dashed #b3b8c2;
+        border-radius: 8px;
+      }
+      .tools h2 {
+        margin-top: 0;
+        font-size: 18px;
+      }
+      .tools input {
+        font: inherit;
+        width: 100%;
+        padding: 6px 8px;
+        box-sizing: border-box;
+      }
+      #dump {
+        max-height: 300px;
+        overflow: auto;
+        padding: 8px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        line-height: 1.4;
+        white-space: pre-wrap;
+        word-break: break-all;
+        background: #fff;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+      }
+      ol.steps {
+        font-size: 15px;
+      }
+      /* Служебный стиль с осмысленным текстом внутри: проверка FR-46 —
+         содержимое <style> в собираемые поля попасть не должно. */
+      .never-collected {
+        color: #333;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Короткий список проверок стоит ПЕРЕД меню намеренно: заголовком его
+         делать нельзя — тогда у пункта меню появился бы `nearestHeading`,
+         и случай «заголовка выше нет» перестал бы проверяться. -->
+    <p class="hint">
+      Что проверяется на этой странице: контекст до и после — от НУЖНОГО
+      вхождения, а не от первого (FR-42); человекочитаемый путь без пустых
+      и продублированных звеньев (FR-43); счётчик повторов строки, не считающий
+      наложенное нами (FR-44); шапка файла обмена (FR-45); отсутствие в полях
+      содержимого служебных элементов, комментариев и адресов ссылок (FR-46).
+      Подробный порядок действий — в блоке стенда внизу.
+    </p>
+
+    <nav aria-label="Разделы">
+      <ul class="menu">
+        <li><a href="?kalka">Тарифы на подключение</a></li>
+        <li><a href="?kalka&amp;page=montazh">Монтаж и пусконаладка</a></li>
+      </ul>
+    </nav>
+
+    <main id="page"></main>
+
+    <!-- ─────────────────────────────────────────────────────────────────────
+         Содержимое маршрутов лежит в <template>: содержимое шаблона не входит
+         в дерево документа вовсе, и обход текстовых узлов до него не достаёт.
+         Скрывать блоки атрибутом `hidden` было бы НЕВЕРНО: обход не смотрит
+         на видимость, и спрятанный маршрут всё равно считался бы в повторах —
+         то есть проверка второго маршрута молча перестала бы что-либо значить.
+    ────────────────────────────────────────────────────────────────────── -->
+    <template id="tpl-main">
+      <nav aria-label="Хлебные крошки">
+        <ol class="crumbs">
+          <li>Каталог</li>
+          <li>Тарифы на подключение</li>
+        </ol>
+      </nav>
+
+      <h1>Тарифы на подключение</h1>
+
+      <p>
+        Одна и та же строка стоит на этой странице в трёх ролях: пунктом меню,
+        последней «хлебной крошкой» и заголовком. Ни человек, ни агент не
+        различат их по тексту — различает только контекст.
+      </p>
+
+      <p id="split">Тарифы <strong>льготные</strong> на подключение</p>
+    </template>
+
+    <template id="tpl-second">
+      <h2>Тарифы на подключение</h2>
+      <p>
+        Второй маршрут. Строка та же, окружение другое, и повторов на странице
+        меньше: «хлебных крошек» и заголовка первого маршрута здесь нет.
+      </p>
+    </template>
+
+    <section>
+      <h2>Каталог кранов</h2>
+      <div class="row">
+        <article>
+          <h3>Кран мостовой</h3>
+          <p>Опирается на подкрановые пути по обеим сторонам пролёта.</p>
+        </article>
+        <article>
+          <h3>Кран козловой</h3>
+          <p>Работает на открытых площадках без несущих конструкций здания.</p>
+        </article>
+        <article>
+          <h3>Кран консольный</h3>
+          <p>Обслуживает рабочее место у станка или сборочного стенда.</p>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <h2>Оператор персональных данных</h2>
+      <div aria-label="Оператор персональных данных">
+        <p id="dup-label">Обработка сведений ведётся на территории России.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2>Технические сведения</h2>
+      <div>
+        <dl>
+          <dt>Грузоподъёмность</dt>
+          <dd id="wrapped">До трёхсот двадцати тонн</dd>
+        </dl>
+      </div>
+    </section>
+
+    <section>
+      <h2>Сроки поставки</h2>
+      <p id="applied-target">Уточните срок у менеджера</p>
+      <p id="neighbour">Срок изготовления — двенадцать недель</p>
+    </section>
+
+    <section>
+      <h2>Документация</h2>
+      <!-- Скрытое замечание вёрстки: этот комментарий не имеет права попасть
+           ни в одно собираемое поле (FR-46). -->
+      <p id="with-link">
+        Порядок работ описан в
+        <a href="/docs/instrukciya.pdf">инструкции по монтажу</a>, приложение
+        к договору поставки.
+      </p>
+      <script>
+        // Служебный скрипт с осмысленным текстом внутри: проверка FR-46.
+        // Ни эта строка, ни значение ниже в собираемые поля попасть не должны.
+        window.__standNote = 'Инструкция по монтажу лежит в файле instrukciya.pdf'
+      </script>
+    </section>
+
+    <!-- ─────────────────────────────────────────────────────────────────────
+         Стенд.
+
+         Кнопки ниже читают localStorage и DOM самой страницы НАПРЯМУЮ. Так
+         можно: это код страницы стенда, а не код виджета.
+
+         Ни одна строка-мишень в текст стенда не выписана. Это не аккуратность,
+         а условие работы проверки: обход считает текст ВСЕЙ страницы, и строка,
+         упомянутая в инструкции, добавила бы к счётчику повторов лишнюю
+         единицу — то есть сломала бы ровно ту проверку, которую инструкция
+         описывает. Текст для вставки выдаёт кнопка, и лежит он в поле ввода:
+         значение атрибута текстовым узлом не является и в обход не попадает.
+    ────────────────────────────────────────────────────────────────────── -->
+    <div class="tools">
+      <h2>Стенд: контекст для агента</h2>
+
+      <p>
+        <button id="show" type="button">Показать собранное</button>
+        <button id="repeat" type="button">Наложить и повторить захват</button>
+        <button id="clear" type="button">Очистить хранилище Кальки</button>
+      </p>
+
+      <p>
+        <label for="paste" class="hint">Текст для шага 8 — скопируйте отсюда:</label>
+        <input id="paste" type="text" readonly value="" />
+      </p>
+
+      <p class="hint">
+        <b>Прежде чем нажимать кнопки стенда — выключите инструмент.</b> Пока
+        «Текст», «Область» или «Указатель» выбраны, виджет перехватывает клики
+        по всей странице, и нажатие на кнопку стенда откроет правку самой
+        кнопки. Это штатное поведение виджета, а не поломка стенда: перехват
+        снимается повторным нажатием на кнопку инструмента.
+      </p>
+
+      <p class="hint" id="tools-report">— готово к работе</p>
+      <div id="dump">Ничего не запрашивалось.</div>
+
+      <h3>Что проверяется на этой странице</h3>
+      <ol class="steps">
+        <li>
+          <b>Главная проверка вехи.</b> Инструментом «Текст» захватите правку
+          трижды: пункт меню, последнюю «хлебную крошку» и заголовок первого
+          маршрута — три места с ОДИНАКОВЫМ текстом. Нажмите «Показать
+          собранное»: у трёх записей <code>contextBefore</code> и
+          <code>contextAfter</code> обязаны быть РАЗНЫМИ, а
+          <code>occurrencesOnPage</code> — одинаковым и равным трём. Именно этот
+          сценарий поймал ошибку 2026-09-04, когда контекст брался от первого
+          вхождения строки и все три записи получали один и тот же.
+        </li>
+        <li>
+          <b>Разорванный разметкой абзац.</b> Правьте абзац со словом внутри
+          <code>&lt;strong&gt;</code>. Его текст целиком не лежит ни в одном
+          текстовом узле, и подход «искать n-е вхождение по <code>anchor.index</code>»
+          здесь промахнулся бы. Контекст обязан быть НЕПУСТЫМ и указывать на его
+          собственное место.
+        </li>
+        <li>
+          <b>Путь у карточки.</b> Правьте заголовок средней карточки в «Каталоге
+          кранов». <code>path</code> обязан читаться как
+          «Каталог кранов → карточка 2 → заголовок»: не пустая строка и не
+          заголовок страницы.
+        </li>
+        <li>
+          <b>Продублированная метка.</b> Правьте абзац в разделе про оператора
+          персональных данных: заголовок раздела и подпись внутреннего блока
+          совпадают, и в <code>path</code> они обязаны схлопнуться в ОДНО звено,
+          а не удвоиться.
+        </li>
+        <li>
+          <b>Обёртки без меток.</b> Правьте значение в «Технических сведениях»
+          (оно лежит внутри трёх безымянных обёрток). <code>path</code> не должен
+          схлопнуться в пустую строку — заголовок раздела обязан в нём остаться.
+        </li>
+        <li>
+          <b>Запрет командоподобного содержимого.</b> Правьте абзац в
+          «Документации». Ни в одном собранном поле не должно оказаться
+          содержимого <code>&lt;script&gt;</code> и <code>&lt;style&gt;</code>,
+          текста HTML-комментария и значения <code>href</code> — видимый текст
+          ссылки при этом присутствовать ОБЯЗАН, он и есть текст страницы.
+        </li>
+        <li>
+          <b>Второй маршрут.</b> Перейдите по второму пункту меню и захватите
+          там заголовок с той же строкой. У записи обязаны быть другой
+          <code>route</code>, другой контекст и другой
+          <code>occurrencesOnPage</code> (двойка вместо тройки): контекст
+          считается по текущей странице, а не по обеим сразу.
+        </li>
+        <li>
+          <b>Повторный захват рядом с наложенным.</b> Нажмите «Наложить и
+          повторить захват» — кнопка положит нужный текст в поле выше и скажет,
+          сколько мест уже наложено. Правьте первый абзац раздела «Сроки
+          поставки», вставив туда текст из поля: на странице строка станет
+          встречаться дважды, но вторая копия — НАША. Теперь захватите правку на
+          соседнем абзаце: его <code>occurrencesOnPage</code> обязан быть
+          <b>1</b>, а не 2. Двойка означала бы, что виджет посчитал собственный
+          наложенный текст за текст носителя.
+        </li>
+        <li>
+          <b>«Область» и «Указатель».</b> Снимите замечание обоими
+          инструментами. У записей типа <code>comment</code> те же пять полей
+          обязаны быть заполнены так же, как у правки текста, а
+          <code>wasHtml</code> — остаться ПУСТЫМ.
+        </li>
+        <li>
+          <b>Шапка файла.</b> Выгрузите правки и откройте JSON: шапка
+          <code>about</code> содержит <code>what</code>, <code>types</code>,
+          <code>rule</code> и <code>data</code>, <code>format</code> равен
+          единице, значения <code>types</code> совпадают с типами записей
+          дословно, и ни одного поля сверх контракта в записях нет.
+        </li>
+        <li>
+          <b>Совместимость с прошлым.</b> Файл, выгруженный ДО этой вехи, лежит
+          на соседнем стенде: <code>dev/review.html</code>, кнопка «Скачать
+          заготовленный файл». Загрузите его сюда — поля агента в таких записях
+          обязаны остаться нулевыми и пустыми и задним числом НЕ дозаполняться.
+        </li>
+        <li>
+          <b>Логи и демонтаж.</b> В консоли не должно быть ни
+          <code>path</code>, ни <code>nearestHeading</code>, ни текста
+          контекста — только длины и количества. Затем выполните
+          <code>window.__kalka.unmount()</code>: страница возвращается к
+          исходной.
+        </li>
+      </ol>
+
+      <p class="hint">
+        Между прогонами хранилище стоит чистить: записи прошлого прогона иначе
+        всплывут в следующем и собьют счёт.
+      </p>
+    </div>
+
+    <script>
+      // ── Маршрутизация ─────────────────────────────────────────────────────
+      //
+      // Роутер намеренно ванильный: проверяется поведение виджета при
+      // клиентской навигации, а не чужой фреймворк. Содержимое маршрута
+      // КЛОНИРУЕТСЯ из <template> и вставляется в <main>, а прошлое удаляется
+      // из дерева целиком — см. комментарий у шаблонов выше.
+
+      const page = document.getElementById('page')
+
+      function currentPage() {
+        return new URLSearchParams(location.search).get('page') === 'montazh'
+          ? 'second'
+          : 'main'
+      }
+
+      function draw() {
+        const name = currentPage()
+        const tpl = document.getElementById(name === 'second' ? 'tpl-second' : 'tpl-main')
+        page.textContent = ''
+        page.appendChild(tpl.content.cloneNode(true))
+
+        for (const link of document.querySelectorAll('.menu a')) {
+          const target = new URLSearchParams(link.getAttribute('href').slice(1)).get('page')
+          const active = (target === 'montazh' ? 'second' : 'main') === name
+          if (active) link.setAttribute('aria-current', 'page')
+          else link.removeAttribute('aria-current')
+        }
+      }
+
+      document.querySelector('.menu').addEventListener('click', (event) => {
+        const link = event.target.closest('a')
+        if (!link) return
+        event.preventDefault()
+        history.pushState({}, '', link.getAttribute('href'))
+        draw()
+      })
+
+      window.addEventListener('popstate', draw)
+      draw()
+    </script>
+
+    <script>
+      // ── Инструменты стенда ────────────────────────────────────────────────
+
+      const ENTRIES_KEY = 'kalka:entries'
+      const APPLIED_ATTRIBUTE = 'data-kalka-applied'
+
+      /**
+       * Текст, которым подменяется первый абзац «Сроков поставки» на шаге 8.
+       *
+       * Живёт В СКРИПТЕ и попадает на страницу только значением поля ввода:
+       * выписанный в текст инструкции, он добавил бы странице лишнее вхождение
+       * и сломал бы проверку, которую сам же обслуживает.
+       */
+      const PASTE_TEXT = 'Срок изготовления — двенадцать недель'
+
+      const report = document.getElementById('tools-report')
+      const dump = document.getElementById('dump')
+      const paste = document.getElementById('paste')
+
+      function say(text) {
+        report.textContent = `— ${text}`
+      }
+
+      /** Пять полей записи, ради которых веха и затеяна, — крупно и отдельно. */
+      function agentFieldsOf(entry) {
+        return {
+          id: entry.id,
+          type: entry.type,
+          route: entry.route,
+          was: entry.was,
+          path: entry.path,
+          nearestHeading: entry.nearestHeading,
+          contextBefore: entry.contextBefore,
+          contextAfter: entry.contextAfter,
+          occurrencesOnPage: entry.occurrencesOnPage,
+        }
+      }
+
+      document.getElementById('show').addEventListener('click', () => {
+        const raw = localStorage.getItem(ENTRIES_KEY)
+        if (!raw) {
+          dump.textContent = 'Хранилище пусто: правок пока нет.'
+          say('в хранилище ничего нет')
+          return
+        }
+
+        let parsed
+        try {
+          parsed = JSON.parse(raw)
+        } catch {
+          dump.textContent = raw
+          say('снимок не разбирается как JSON — показан как есть')
+          return
+        }
+
+        const entries = Array.isArray(parsed.entries) ? parsed.entries : []
+        dump.textContent = JSON.stringify(entries.map(agentFieldsOf), null, 2)
+        say(`записей: ${entries.length}`)
+      })
+
+      document.getElementById('repeat').addEventListener('click', () => {
+        paste.value = PASTE_TEXT
+        paste.select()
+
+        const applied = document.querySelectorAll(`[${APPLIED_ATTRIBUTE}]`).length
+        const target = document.getElementById('applied-target')
+        target.scrollIntoView({ block: 'center', behavior: 'smooth' })
+
+        say(
+          applied === 0
+            ? 'текст скопирован в поле; наложенных мест на странице пока нет — правьте первый абзац «Сроков поставки»'
+            : `текст скопирован в поле; наложенных мест на странице: ${applied} — теперь захватите правку на соседнем абзаце`,
+        )
+      })
+
+      document.getElementById('clear').addEventListener('click', () => {
+        for (const key of Object.keys(localStorage)) {
+          if (key.startsWith('kalka:')) localStorage.removeItem(key)
+        }
+        dump.textContent = 'Хранилище очищено. Перезагрузите страницу.'
+        say('хранилище «Кальки» очищено')
+      })
+    </script>
+
+    <script type="module" src="/src/app/index.ts"></script>
+  </body>
+</html>

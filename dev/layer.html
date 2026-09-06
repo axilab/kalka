@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Калька — слой правок и якоря</title>
+    <style>
+      body {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 32px 16px 96px;
+        font-family: Georgia, serif;
+        line-height: 1.6;
+      }
+      nav a {
+        margin-right: 16px;
+      }
+      nav a[aria-current='page'] {
+        font-weight: 700;
+        text-decoration: none;
+      }
+      .card {
+        padding: 16px;
+        margin: 16px 0;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+      }
+      .hint {
+        color: #6b7280;
+        font-size: 14px;
+      }
+      button {
+        font: inherit;
+        padding: 6px 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Стенд слоя правок</h1>
+
+    <nav>
+      <a href="?kalka&page=tariffs">Тарифы</a>
+      <a href="?kalka&page=support">Поддержка</a>
+    </nav>
+
+    <p class="hint">
+      Страница проверяет оба сценария спайк-гейта R1: уход на другой маршрут
+      и возврат (правки обязаны остаться на местах) и подмену текста элемента
+      при живом селекторе (правка обязана быть честно помечена, а не потеряна).
+    </p>
+
+    <!-- Уровень 1: стабильный id. Селектор его переживает. -->
+    <h2 id="capabilities-title">Чем занимаемся</h2>
+    <p>Проектирование, изготовление и монтаж подъёмного оборудования.</p>
+
+    <!--
+      Уровень 2: класс выглядит сгенерированным сборщиком (css-1a2b3c4d),
+      isStableToken его отсеет, и describeNode свалится на :nth-of-type.
+      Проверяется именно откат на XPath.
+    -->
+    <div class="card">
+      <h3 class="css-1a2b3c4d">Мостовой кран для цеха</h3>
+      <p>Грузоподъёмность до 20 т, работа в закрытых помещениях.</p>
+    </div>
+
+    <!-- Уровень 3 и index: две одинаковые строки подряд. -->
+    <div class="card">
+      <p>Подробнее об условиях</p>
+      <p>Подробнее об условиях</p>
+    </div>
+
+    <!--
+      Живой селектор, изменившийся текст. Правка ниже помнит «Отдел продаж»,
+      а на странице уже «Коммерческий отдел»: сверка was обязана дать lost,
+      а не тихое наложение на переименованный заголовок.
+    -->
+    <h2 id="sales-title">Коммерческий отдел</h2>
+    <p>Работаем с понедельника по пятницу.</p>
+
+    <!-- Блок для проверки наблюдателя мутаций: перерисовывается без смены адреса. -->
+    <div class="card">
+      <div id="redrawn">
+        <p id="redrawn-text">Заявку рассматриваем в течение суток.</p>
+      </div>
+      <button id="redraw" type="button">Перерисовать блок</button>
+      <span class="hint">— адрес не меняется, слой обязан восстановиться</span>
+    </div>
+
+    <main></main>
+
+    <script>
+      // Роутер намеренно ванильный: проверяется поведение виджета при клиентской
+      // навигации, а не чужой фреймворк.
+      const PAGES = {
+        tariffs: { title: 'Тарифы', body: 'Домашний, Игровой и Загородный.' },
+        support: { title: 'Поддержка', body: 'Инженер приезжает за два рабочих дня.' },
+      }
+
+      function currentPage() {
+        const name = new URLSearchParams(location.search).get('page')
+        return Object.prototype.hasOwnProperty.call(PAGES, name) ? name : 'tariffs'
+      }
+
+      function draw() {
+        const name = currentPage()
+        const page = PAGES[name]
+        const main = document.querySelector('main')
+        main.textContent = ''
+
+        const heading = document.createElement('h2')
+        heading.textContent = page.title
+        const paragraph = document.createElement('p')
+        paragraph.textContent = page.body
+        main.append(heading, paragraph)
+
+        for (const link of document.querySelectorAll('nav a')) {
+          const target = new URLSearchParams(link.getAttribute('href').slice(1)).get('page')
+          if (target === name) link.setAttribute('aria-current', 'page')
+          else link.removeAttribute('aria-current')
+        }
+      }
+
+      document.querySelector('nav').addEventListener('click', (event) => {
+        const link = event.target.closest('a')
+        if (!link) return
+        event.preventDefault()
+        history.pushState({}, '', link.getAttribute('href'))
+        draw()
+      })
+
+      window.addEventListener('popstate', draw)
+      draw()
+
+      // Перерисовка блока без смены маршрута: носитель заменяет содержимое,
+      // наложенная правка стирается, наблюдатель мутаций обязан её вернуть.
+      document.getElementById('redraw').addEventListener('click', () => {
+        const host = document.getElementById('redrawn')
+        host.textContent = ''
+        const paragraph = document.createElement('p')
+        paragraph.id = 'redrawn-text'
+        paragraph.textContent = 'Заявку рассматриваем в течение суток.'
+        host.append(paragraph)
+      })
+    </script>
+
+    <script type="module" src="/src/app/index.ts"></script>
+
+    <script type="module">
+      // Фикстуры. Инструмент «Текст» ещё не написан, импорта ещё нет —
+      // записи подаются dev-only функцией seed. Поля для агента
+      // (path, nearestHeading, контекст) заполнены правдоподобно, но здесь
+      // не проверяются: их собирает веха «Машиночитаемость».
+      const viewport = { w: 1440, h: 900 }
+      const at = '2026-09-05T10:00:00Z'
+      const emptyStyle = {}
+
+      // Маршрут выводится из адреса, а не пишется строкой: стенд обязан
+      // работать по любому пути, каким его отдаст dev-сервер. Параметр kalka
+      // в маршрут не входит по определению (см. currentRoute), поэтому
+      // базовый маршрут — это просто путь без запроса.
+      const ROUTE = location.pathname
+      const SUPPORT_ROUTE = `${location.pathname}?page=support`
+
+      const ENTRIES = [
+        {
+          // Уровень 1: стабильный id, текст на месте → applied.
+          id: 'lvl1',
+          type: 'text-override',
+          route: ROUTE,
+          path: 'Стенд → заголовок раздела',
+          tag: 'h2',
+          was: 'Чем занимаемся',
+          wasHtml: 'Чем занимаемся',
+          now: 'Что мы <strong>делаем</strong>',
+          style: emptyStyle,
+          nearestHeading: 'Стенд слоя правок',
+          contextBefore: 'Страница проверяет оба сценария спайк-гейта R1.',
+          contextAfter: 'Проектирование, изготовление и монтаж.',
+          occurrencesOnPage: 1,
+          anchor: {
+            selector: '#capabilities-title',
+            xpath: '/html[1]/body[1]/h2[1]',
+            snippet: 'Чем занимаемся',
+            index: 0,
+          },
+          viewport,
+          at,
+        },
+        {
+          // Уровень 2: селектор построен по сгенерированному классу и мёртв,
+          // XPath жив → правку поднимает второй уровень.
+          id: 'lvl2',
+          type: 'text-override',
+          route: ROUTE,
+          path: 'Стенд → карточка 1 → заголовок',
+          tag: 'h3',
+          was: 'Мостовой кран для цеха',
+          wasHtml: 'Мостовой кран для цеха',
+          now: 'Кран мостовой для <strong>цеховых нужд</strong>',
+          style: emptyStyle,
+          nearestHeading: 'Чем занимаемся',
+          contextBefore: 'Проектирование, изготовление и монтаж.',
+          contextAfter: 'Грузоподъёмность до 20 т.',
+          occurrencesOnPage: 1,
+          anchor: {
+            // Класса css-9z9z9z9z на странице нет: первый уровень обязан промахнуться.
+            selector: 'h3.css-9z9z9z9z',
+            xpath: '/html[1]/body[1]/div[1]/h3[1]',
+            snippet: 'Мостовой кран для цеха',
+            index: 0,
+          },
+          viewport,
+          at,
+        },
+        {
+          // Уровень 3 и index: селектор и XPath мёртвы, на странице две
+          // одинаковые строки — правка обязана лечь на ВТОРУЮ (index: 1)
+          // и получить статус «уехала», потому что находка неточная.
+          id: 'lvl3',
+          type: 'text-override',
+          route: ROUTE,
+          path: 'Стенд → карточка 2 → вторая строка',
+          tag: 'p',
+          was: 'Подробнее об условиях',
+          wasHtml: 'Подробнее об условиях',
+          now: 'Условия целиком',
+          style: emptyStyle,
+          nearestHeading: 'Чем занимаемся',
+          contextBefore: 'Подробнее об условиях',
+          contextAfter: 'Коммерческий отдел',
+          occurrencesOnPage: 2,
+          anchor: {
+            selector: '#no-such-element',
+            xpath: '/html[1]/body[1]/div[99]/p[1]',
+            snippet: 'Подробнее об условиях',
+            index: 1,
+          },
+          viewport,
+          at,
+        },
+        {
+          // Гейт R1: селектор жив, текст на странице уже другой.
+          // Без сверки was правка молча уехала бы на переименованный заголовок.
+          id: 'lost',
+          type: 'text-override',
+          route: ROUTE,
+          path: 'Стенд → заголовок отдела',
+          tag: 'h2',
+          was: 'Отдел продаж',
+          wasHtml: 'Отдел продаж',
+          now: 'Отдел продаж и сопровождения',
+          style: emptyStyle,
+          nearestHeading: 'Стенд слоя правок',
+          contextBefore: 'Подробнее об условиях',
+          contextAfter: 'Работаем с понедельника по пятницу.',
+          occurrencesOnPage: 0,
+          anchor: {
+            selector: '#sales-title',
+            xpath: '/html[1]/body[1]/h2[2]',
+            snippet: 'Отдел продаж',
+            index: 0,
+          },
+          viewport,
+          at,
+        },
+        {
+          // Перерисовываемый блок: проверка наблюдателя мутаций.
+          id: 'redraw',
+          type: 'text-override',
+          route: ROUTE,
+          path: 'Стенд → перерисовываемый блок',
+          tag: 'p',
+          was: 'Заявку рассматриваем в течение суток.',
+          wasHtml: 'Заявку рассматриваем в течение суток.',
+          now: 'Заявку рассматриваем за <strong>два часа</strong>.',
+          style: emptyStyle,
+          nearestHeading: 'Коммерческий отдел',
+          contextBefore: 'Работаем с понедельника по пятницу.',
+          contextAfter: 'Перерисовать блок',
+          occurrencesOnPage: 1,
+          anchor: {
+            selector: '#redrawn-text',
+            xpath: '/html[1]/body[1]/div[3]/div[1]/p[1]',
+            snippet: 'Заявку рассматриваем в течение суток.',
+            index: 0,
+          },
+          viewport,
+          at,
+        },
+        {
+          // Запись чужого маршрута: не накладывается и при этом НЕ помечается
+          // потерянной. «Правка для другой страницы» и «правка, потерявшая
+          // место» — разные вещи.
+          id: 'foreign',
+          type: 'text-override',
+          route: SUPPORT_ROUTE,
+          path: 'Поддержка → описание',
+          tag: 'p',
+          was: 'Инженер приезжает за два рабочих дня.',
+          wasHtml: 'Инженер приезжает за два рабочих дня.',
+          now: 'Инженер приезжает в день обращения.',
+          style: emptyStyle,
+          nearestHeading: 'Поддержка',
+          contextBefore: 'Поддержка',
+          contextAfter: '',
+          occurrencesOnPage: 1,
+          anchor: {
+            selector: 'main > p:nth-of-type(1)',
+            xpath: '/html[1]/body[1]/main[1]/p[1]',
+            snippet: 'Инженер приезжает за два рабочих дня.',
+            index: 0,
+          },
+          viewport,
+          at,
+        },
+        {
+          // Тип style-wish в DOM не применяется никогда — только статус.
+          // Целится в заголовок страницы, которого не касается ни одна другая
+          // запись: иначе он был бы уже переписан, сверка was не сошлась бы,
+          // и стенд показывал бы «уехала» там, где проверяется совсем другое.
+          id: 'wish',
+          type: 'style-wish',
+          route: ROUTE,
+          path: 'Стенд → заголовок страницы',
+          tag: 'h1',
+          was: 'Стенд слоя правок',
+          wasHtml: 'Стенд слоя правок',
+          now: '',
+          style: { fontSize: '28px', color: '#1b3a6b' },
+          nearestHeading: 'Стенд слоя правок',
+          contextBefore: '',
+          contextAfter: '',
+          occurrencesOnPage: 1,
+          anchor: {
+            selector: 'h1',
+            xpath: '/html[1]/body[1]/h1[1]',
+            snippet: 'Стенд слоя правок',
+            index: 0,
+          },
+          viewport,
+          at,
+        },
+      ]
+
+      // Виджет поднимается на DOMContentLoaded, а модуль-фикстуры выполняется
+      // раньше него: ждём готовности API, а не угадываем момент.
+      function seedWhenReady() {
+        if (window.__kalka && window.__kalka.seed) {
+          window.__kalka.seed(ENTRIES)
+          return
+        }
+        requestAnimationFrame(seedWhenReady)
+      }
+      seedWhenReady()
+    </script>
+  </body>
+</html>

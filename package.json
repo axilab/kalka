@@ -1,0 +1,45 @@
+{
+  "name": "kalka",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Калька — слой правок поверх прототипа",
+  "license": "MIT",
+  "homepage": "https://axilab.github.io/kalka/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/axilab/kalka.git"
+  },
+  "keywords": [
+    "widget",
+    "preact",
+    "shadow-dom",
+    "prototyping",
+    "overlay",
+    "annotations"
+  ],
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && npm run check:bundle",
+    "check:bundle": "node scripts/check-bundle.mjs",
+    "build:site": "node scripts/build-site.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "preact": "^10.29.8"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@preact/preset-vite": "^2.10.6",
+    "@types/node": "^24.13.3",
+    "eslint": "^9.39.5",
+    "jsdom": "^26.1.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.69.0",
+    "vite": "^7.3.6",
+    "vitest": "^3.2.7"
+  }
+}

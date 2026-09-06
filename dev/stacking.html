@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Калька — контекст наложения на предке</title>
+    <style>
+      body {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 32px 16px 96px;
+        font-family: Georgia, serif;
+        line-height: 1.6;
+      }
+      /* Контейнер создаёт контекст наложения: transform + position + z-index.
+         Если бы host виджета висел внутри него, никакой z-index не поднял бы
+         интерфейс поверх перекрывающего блока. */
+      .stacking {
+        transform: translateZ(0);
+        position: relative;
+        z-index: 0;
+      }
+      .overlay {
+        position: fixed;
+        right: 0;
+        bottom: 0;
+        width: 320px;
+        height: 220px;
+        padding: 16px;
+        background: rgba(27, 58, 107, 0.92);
+        color: #fff;
+        z-index: 999999;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="stacking">
+      <h1>Тарифы на подключение</h1>
+      <p>
+        Всё содержимое страницы лежит внутри контейнера с собственным контекстом
+        наложения. Виджет обязан остаться поверх синего блока: его host висит
+        прямо на <code>body</code>, а не внутри этого контейнера.
+      </p>
+
+      <h2>Что входит в подключение</h2>
+      <ul>
+        <li>Выезд инженера и осмотр помещения</li>
+        <li>Прокладка кабеля до щитка на этаже</li>
+        <li>Настройка оборудования и проверка скорости</li>
+      </ul>
+    </div>
+
+    <div class="overlay">
+      <p>Перекрывающий блок носителя: <code>position: fixed</code>, <code>z-index: 999999</code>.</p>
+      <p>
+        Это приёмочный случай для рейки: блок носителя прижат к тому же правому
+        краю, что и она. Рейка должна быть видна поверх него целиком — все три
+        инструмента, переключатели вида, счётчик и вход в разбор, — и оставаться
+        нажимаемой. Метки при этом не должны краситься поверх интерфейса: обведите
+        область так, чтобы рамка легла на рейку.
+      </p>
+    </div>
+
+    <script type="module" src="/src/app/index.ts"></script>
+  </body>
+</html>

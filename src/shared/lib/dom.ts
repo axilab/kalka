@@ -1,0 +1,905 @@
+/*
+ * Работа с DOM сайта-носителя.
+ *
+ * Один из ЧЕТЫРЁХ модулей проекта, которым разрешено трогать чужой DOM
+ * (ARCHITECTURE.md, «Границы с чужим кодом»): готовность документа,
+ * `composedPath`, прокрутка к месту правки, выбор элемента, рисование области
+ * и — с вехи «Машиночитаемость» — ОБЩИЙ обход текстовых узлов страницы.
+ *
+ * Обход переехал сюда из `entities/anchor/model/walk.ts` и теперь единственный
+ * на проект: у него три потребителя (уровень 3 якоря, проверка после
+ * передеплоя, контекст для агента), они лежат в РАЗНЫХ слайсах слоя `entities`,
+ * а соседние слайсы одного слоя друг друга не видят. Единственное место обязано
+ * лежать слоем ниже всех потребителей — решение 3 плана вехи. Разъехавшиеся
+ * правила отсечения означали бы, что три потребителя видят три разные страницы.
+ */
+
+import {
+  APPLIED_ATTRIBUTE,
+  HOVER_ATTRIBUTE,
+  MARK_MIN_SIZE_PX,
+  PICK_MAX_DEPTH,
+  RECT_ANCHOR_MAX_DEPTH,
+  ROOT_ATTRIBUTE,
+  ROOT_SELECTOR,
+  TARGET_ATTRIBUTE,
+  TARGET_FLASH_MS,
+} from 'shared/config/constants'
+import { createLogger } from 'shared/lib/log'
+import { normalize } from 'shared/lib/normalize'
+import { safely } from 'shared/lib/safe'
+
+const log = createLogger('dom:picking')
+
+/**
+ * Принадлежит ли событие интерфейсу «Кальки».
+ *
+ * Проверять `event.target` бесполезно: для слушателя снаружи он ретаргетится
+ * на host-элемент, и внутренние узлы по нему неразличимы. Полный путь
+ * с узлами открытого shadow root даёт только composedPath().
+ */
+export function isInsideKalka(event: Event): boolean {
+  return event
+    .composedPath()
+    .some((node) => node instanceof Element && node.hasAttribute(ROOT_ATTRIBUTE))
+}
+
+/**
+ * Выполняет `run`, когда документ готов принять host-элемент.
+ * Возвращает функцию отмены: скрипт может быть снят до готовности документа.
+ *
+ * `window.load` намеренно не используется: ждать картинок незачем,
+ * а `DOMContentLoaded` уже гарантирует наличие `document.body`.
+ */
+export function onDocumentReady(run: () => void): () => void {
+  if (document.readyState !== 'loading') {
+    run()
+    return () => {}
+  }
+  const handler = (): void => run()
+  document.addEventListener('DOMContentLoaded', handler, { once: true })
+  return () => document.removeEventListener('DOMContentLoaded', handler)
+}
+
+/**
+ * Выполняет `run`, когда носитель предположительно закончил гидрацию.
+ * Возвращает функцию отмены.
+ *
+ * Готовности документа мало. Прототип на React/Vue/Svelte сначала отдаёт
+ * серверный HTML, потом фреймворк берёт его под свой контроль и восстанавливает
+ * «правильное» состояние — наложенная до этого правка стирается, и выглядит это
+ * как «правка мигнула и исчезла».
+ *
+ * Надёжного кросс-фреймворкового события «гидрация закончилась» не существует,
+ * поэтому здесь эвристика: два вложенных requestAnimationFrame дают фреймворку
+ * отработать свой первый цикл отрисовки. Она подстрахована наблюдателем мутаций
+ * (app/lib/overlay/mutations.ts), который переприменит слой, если носитель
+ * перерисовал страницу позже.
+ *
+ * `onDocumentReady` этим не заменяется: подъёму самого виджета лишние два кадра
+ * не нужны, а на странице без анимаций они заметны.
+ */
+export function onHydrated(run: () => void): () => void {
+  let firstFrame: number | undefined
+  let secondFrame: number | undefined
+
+  const cancelReady = onDocumentReady(() => {
+    firstFrame = requestAnimationFrame(() => {
+      firstFrame = undefined
+      secondFrame = requestAnimationFrame(() => {
+        secondFrame = undefined
+        run()
+      })
+    })
+  })
+
+  return (): void => {
+    cancelReady()
+    if (firstFrame !== undefined) cancelAnimationFrame(firstFrame)
+    if (secondFrame !== undefined) cancelAnimationFrame(secondFrame)
+  }
+}
+
+/*
+ * Общий обход текстовых узлов чужой страницы.
+ *
+ * Потребителей три, и все три лежат в РАЗНЫХ слайсах слоя `entities`
+ * (`anchor` — двумя входами, `agent-context` — третьим). Соседние слайсы одного
+ * слоя друг друга не импортируют, поэтому единственное место обязано лежать
+ * слоем ниже всех троих — здесь (решение 3 плана вехи «Машиночитаемость»).
+ *
+ * Правила отсечения обязаны быть ОДНИМИ И ТЕМИ ЖЕ: разъехавшись, они дали бы
+ * трёх потребителей, каждый из которых видит свою страницу, — и номер повтора,
+ * посчитанный одним, перестал бы что-либо значить для другого.
+ */
+
+/** Настройки обхода: что именно считать текстом страницы. */
+export interface TextWalkOptions {
+  /**
+   * Отсекать ли поддеревья с меткой наложенной правки.
+   *
+   * Правила два, и оба обязаны остаться. Уровень 3 поиска якоря наложенные
+   * элементы видеть ОБЯЗАН (иначе исправная правка теряла бы место при каждом
+   * переприменении слоя), а проверка после передеплоя (FR-35) и контекст
+   * для агента — обязаны НЕ видеть: текст под меткой написали мы, а не носитель.
+   */
+  skipApplied?: boolean
+
+  /**
+   * Поддерево, которое принимается ВСЕГДА, даже если оно наложенное.
+   *
+   * Нужно контексту для агента (решение 4 плана вехи): он отсекает наложенное,
+   * потому что считать по нашему собственному тексту повторы значило бы врать
+   * агенту про исходники. Но если целевой элемент сам оказался внутри
+   * наложенного поддерева — а так бывает при второй правке рядом с первой, —
+   * отсечение съело бы его собственный текст, и контекст молча стал бы пустым.
+   * Оба входа `entities/anchor` передают `null`: их поведение не меняется.
+   */
+  keep?: Element | null
+}
+
+/**
+ * Строит обход текстовых узлов страницы. `null` — у документа нет `body`.
+ *
+ * REJECT, а не SKIP, везде, где отсекается: SKIP исключает только сам узел
+ * и продолжает обход в детей, а отсечь надо поддерево целиком.
+ */
+export function createTextWalker(root: Document, options: TextWalkOptions = {}): TreeWalker | null {
+  if (!root.body) return null
+
+  const { skipApplied = false, keep = null } = options
+
+  return root.createTreeWalker(root.body, NodeFilter.SHOW_TEXT, {
+    acceptNode(node: Node): number {
+      const parent = (node as Text).parentElement
+      if (!parent) return NodeFilter.FILTER_REJECT
+
+      // Собственный интерфейс отсекается вместе со всем поддеревом: иначе обход
+      // провалится внутрь виджета и найдёт там текст правки, которую сам же
+      // и наложил.
+      if (parent.closest(ROOT_SELECTOR)) return NodeFilter.FILTER_REJECT
+
+      // Наложенное нами — не текст носителя. Целевой элемент из-под этого
+      // правила выведен: см. `keep` выше.
+      if (
+        skipApplied &&
+        parent.closest(`[${APPLIED_ATTRIBUTE}]`) &&
+        !(keep && (keep === parent || keep.contains(parent)))
+      ) {
+        return NodeFilter.FILTER_REJECT
+      }
+
+      // Служебные элементы текста страницы не содержат.
+      if (parent.closest('script, style, noscript, template')) return NodeFilter.FILTER_REJECT
+
+      // Пустой узел пропускается сам, но детей у текстового узла и нет.
+      return normalize(node.textContent ?? '') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP
+    },
+  })
+}
+
+/*
+ * Прокрутка к месту правки из списка разбора (FR-31, FR-32).
+ *
+ * Живёт ЗДЕСЬ, а не в слайсе списка: код, трогающий DOM носителя, лежит ровно
+ * в четырёх местах проекта (ARCHITECTURE.md, «Границы с чужим кодом»),
+ * и `shared/lib/dom` — одно из них. Компоненты слоёв `widgets` и `pages`
+ * чужой DOM не трогают вовсе.
+ */
+
+/**
+ * Элемент, подсвеченный последним. Модульная переменная, а не поле замыкания:
+ * повторный вызов на другом элементе обязан снять атрибут с предыдущего —
+ * двух подсвеченных мест одновременно быть не должно, иначе подсветка
+ * перестаёт означать «вот оно».
+ */
+let flashed: Element | null = null
+
+/** Таймер снятия подсветки: новый вызов отменяет предыдущий. */
+let flashTimer: number | undefined
+
+function unflash(): void {
+  if (flashTimer !== undefined) {
+    clearTimeout(flashTimer)
+    flashTimer = undefined
+  }
+  flashed?.removeAttribute(TARGET_ATTRIBUTE)
+  flashed = null
+}
+
+/** Зазор между целью прокрутки и краем перекрытия: впритык читается как «под панелью». */
+const UNCOVER_MARGIN = 16
+
+/**
+ * Уводит цель из-под интерфейса по горизонтали.
+ *
+ * `scrollIntoView({ block: 'center' })` центрирует по вертикали, а по
+ * горизонтали `inline` по умолчанию `'nearest'` — то есть держит цель едва
+ * видимой у края. Пока виджет занимал угол, этого хватало. Ящик разбора
+ * занимает полосу у правого края, и элемент из правой части страницы
+ * оказывается ровно под ним: прокрутка отработает, подсветка встанет,
+ * а человек не увидит ни того, ни другого.
+ *
+ * ── Почему ДО вертикальной прокрутки и почему мгновенно ─────────────────────
+ *
+ * Плавная прокрутка асинхронна. Поправка, выданная после `scrollIntoView`,
+ * складывается с той, что ещё в полёте, и обе приходят не туда: проверено
+ * в браузере — цель уезжала на треть нужного и оставалась под ящиком.
+ * Поэтому горизонталь выставляется первой и сразу, а `scrollIntoView` следом
+ * ведёт только вертикаль: цель к тому моменту уже видна по горизонтали,
+ * и `inline: 'nearest'` её не трогает.
+ *
+ * ── Почему абсолютная позиция, а не сдвиг ───────────────────────────────────
+ *
+ * Величина считается в координатах ДОКУМЕНТА и не зависит от того, где сейчас
+ * страница. Сдвиг относительно текущего положения был бы верен ровно один
+ * кадр.
+ *
+ * Позиция ограничена так, чтобы левый край цели не ушёл за экран: широкий
+ * элемент вытащить из-под панели целиком нельзя, и выталкивать его влево
+ * до потери начала — хуже, чем оставить как есть.
+ */
+function uncover(el: Element, covered: DOMRectReadOnly): void {
+  const rect = el.getBoundingClientRect()
+
+  /*
+   * Вертикаль проверяется по БУДУЩЕМУ положению цели, а не по нынешнему.
+   *
+   * Поправка считается до прокрутки, и сейчас цель может лежать сколь угодно
+   * далеко за нижним краем экрана — мерить её там значило бы спросить
+   * про положение, которого через кадр не будет. Проверено в браузере: цель
+   * ниже сгиба не проходила проверку пересечения, поправка не применялась,
+   * и запись оставалась под ящиком.
+   *
+   * `block: 'center'` задаёт будущее положение однозначно: центр цели встаёт
+   * в центр экрана.
+   */
+  const height = Math.min(rect.height, window.innerHeight)
+  const futureTop = (window.innerHeight - height) / 2
+  if (futureTop + height <= covered.top || futureTop >= covered.bottom) return
+
+  // Перекрытие занимает полосу до правого края экрана, поэтому по горизонтали
+  // важна только его левая граница.
+  if (rect.right <= covered.left) return
+
+  // Часть цели уже видна слева от перекрытия — этого довольно.
+  if (rect.left < covered.left - UNCOVER_MARGIN) return
+
+  const docLeft = rect.left + window.scrollX
+  const docRight = rect.right + window.scrollX
+
+  const wanted = Math.min(
+    // Чтобы правый край цели ушёл левее перекрытия.
+    docRight - (covered.left - UNCOVER_MARGIN),
+    // Но не ценой ухода левого края за левый край экрана.
+    docLeft - UNCOVER_MARGIN,
+  )
+
+  const limit = Math.max(0, document.documentElement.scrollWidth - window.innerWidth)
+  const target = Math.min(Math.max(wanted, 0), limit)
+
+  if (Math.abs(target - window.scrollX) < 1) {
+    // Страница не шире экрана, либо двигать уже некуда. Молчать нельзя: именно
+    // здесь потом ищут причину «прокрутил, а ничего не видно».
+    log.debug('цель под панелью, но увести её некуда')
+    return
+  }
+
+  try {
+    // Без `top`: спецификация оставляет неуказанную ось как есть, и
+    // вертикальную прокрутку эта строка не трогает.
+    window.scrollTo({ left: target })
+  } catch {
+    // Экзотический носитель мог подменить scrollTo или не знать объектной
+    // формы аргумента. Вертикальная прокрутка ниже отработает всё равно.
+    log.debug('горизонтальная доводка не удалась')
+  }
+}
+
+/**
+ * Прокручивает страницу к элементу и подсвечивает его на `TARGET_FLASH_MS`.
+ *
+ * Возвращает `false`, если узла уже нет в документе: носитель мог перерисовать
+ * блок между проходом наложения и кликом по строке списка. Вызывающий скажет
+ * об этом человеку словами, а не сделает вид, что прокрутил (цель Ц4).
+ *
+ * Подсветка приходит правилом из собственного `<style>` движка наложения
+ * по атрибуту `TARGET_ATTRIBUTE` — инлайновый стиль на чужом элементе здесь
+ * запрещён (решение 17 плана вехи).
+ *
+ * `covered` — прямоугольник полосы, занятой интерфейсом, ИЗМЕРЕННЫЙ вызывающим
+ * и переданный сюда. Именно прямоугольник, а не число пикселей и не имя класса:
+ * `shared/lib/dom` не знает и не должен знать ни про ящик, ни про рейку, ни про
+ * их ширину. Параметра нет — поведение прежнее.
+ */
+export function scrollToElement(el: Element, covered?: DOMRectReadOnly | null): boolean {
+  if (!el.isConnected) {
+    log.debug('прокрутка отменена: узла уже нет на странице')
+    return false
+  }
+
+  // Подсветка снимается с предыдущего ДО прокрутки: если прокрутка бросит,
+  // прошлая подсветка всё равно не должна остаться висеть.
+  unflash()
+
+  // Горизонталь — ПЕРВОЙ и мгновенно, вертикаль следом и плавно: обоснование
+  // порядка — в шапке `uncover`.
+  if (covered) uncover(el, covered)
+
+  try {
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  } catch {
+    // Экзотический носитель мог подменить scrollIntoView или не знать
+    // объектной формы аргумента. Подсветить место всё равно надо: человек
+    // долистает сам, и это лучше, чем молчание.
+    log.debug('прокрутка не удалась, место всё равно подсвечено')
+  }
+
+  el.setAttribute(TARGET_ATTRIBUTE, '')
+  flashed = el
+  flashTimer = window.setTimeout(() => {
+    flashTimer = undefined
+    flashed?.removeAttribute(TARGET_ATTRIBUTE)
+    flashed = null
+  }, TARGET_FLASH_MS)
+
+  // `id` записи на этом уровне не известен: сюда приходит только элемент.
+  log.debug('прокручено к месту правки', { тег: el.tagName.toLowerCase() })
+  return true
+}
+
+/**
+ * Снимает подсветку цели немедленно. Вызывается при демонтаже виджета:
+ * страница обязана вернуться к исходному виду целиком, а не только текстом.
+ */
+export function clearScrollTarget(): void {
+  unflash()
+}
+
+/*
+ * Выбор текстового элемента на чужой странице (FR-05).
+ *
+ * Механика ведения мышью и перехвата клика живёт ЗДЕСЬ, а не в слайсе
+ * `features/edit-text`: список мест, которым разрешено трогать DOM носителя,
+ * состоит из четырёх пунктов (ARCHITECTURE.md), и `shared/lib/dom` — один
+ * из них. Слайс инструмента эту механику только включает и выключает.
+ */
+
+/**
+ * Строчная разметка, которая НЕ делает элемент контейнером.
+ *
+ * Абзац с `<strong>` внутри — по-прежнему текстовый элемент и законная цель
+ * правки. Абзац с `<div>` внутри — уже контейнер: правка целиком заменила бы
+ * его содержимое вместе с чужой вёрсткой.
+ *
+ * Список ОТКРЫТЫЙ и заведомо шире белого списка санитизации (решение 4): тот
+ * решает, что сохранить в правке, а этот — что считать целью. Узкий список
+ * здесь делает непригодным для правки обычный абзац: `dev/hostile-css.html`
+ * поймал это на `<p>` с `<code>` внутри. Встретили прототип, где эвристика
+ * промахивается, — тег дописывается сюда, в одно место.
+ */
+const INLINE_TAGS = new Set([
+  'A',
+  'ABBR',
+  'B',
+  'BDI',
+  'BDO',
+  'BR',
+  'CITE',
+  'CODE',
+  'DEL',
+  'DFN',
+  'EM',
+  'I',
+  'INS',
+  'KBD',
+  'MARK',
+  'Q',
+  'S',
+  'SAMP',
+  'SMALL',
+  'SPAN',
+  'STRONG',
+  'SUB',
+  'SUP',
+  'TIME',
+  'U',
+  'VAR',
+  'WBR',
+])
+
+/** Атрибут собственного элемента `<style>` с подсветкой: по нему он и снимается. */
+const HOVER_STYLE_ATTRIBUTE = 'data-kalka-hover-style'
+
+/*
+ * Подсветка цели — `outline` собственным элементом `<style>`, ровно тот же приём,
+ * что и у подсветки изменённых мест (app/lib/overlay/engine.ts): правило носителя
+ * не трогается, `outline` не занимает места и не сдвигает вёрстку, а элемент
+ * `<style>` живёт в `<head>`, куда наблюдатель мутаций не смотрит, — собственная
+ * подсветка не будит переприменение слоя (решение 5).
+ *
+ * ── Цвет ────────────────────────────────────────────────────────────────────
+ *
+ * Литерал, а не переменная: правило живёт в <head> НОСИТЕЛЯ, за пределами
+ * теневого корня, куда переменные :host не приходят по устройству. Источник
+ * значения — --kalka-redline (#c8362a) из app/ui/host.css; менять их надо парой.
+ *
+ * Красный, а не приглушённый: обводка под курсором — ПЕРВОЕ, что видит
+ * человек, взяв инструмент «Текст», и она обязана читаться тем же цветом,
+ * каким виджет метит своё.
+ *
+ * От подсветки цели прокрутки (FR-31) её отличает не толщина линии,
+ * а отсутствие заливки: контур означает «это возьмётся, если нажать»,
+ * заливка — «вот оно, я привёл». Полное объяснение — рядом с TARGET_CSS
+ * в app/lib/overlay/engine.ts.
+ */
+const HOVER_CSS = `[${HOVER_ATTRIBUTE}]{outline:2px solid rgba(200,54,42,.85);outline-offset:2px;cursor:pointer}`
+
+/**
+ * Годится ли элемент в цель правки: есть непустой текст и нет блочных детей.
+ *
+ * Эвристика открытая (решение 4): встретили прототип, где она промахивается, —
+ * правится здесь, в одном месте, а не заплаткой на месте вызова.
+ */
+/**
+ * Раскладки, превращающие детей в самостоятельные боксы независимо от тега.
+ *
+ * Флекс- и грид-контейнер БЛОКИФИЦИРУЮТ своих детей: `<span>` внутри них
+ * получает вычисленный `display: block`, хотя тегом остаётся строчным.
+ * Проверено в браузере на разметке боевого прототипа заказчика (example.com).
+ */
+const BLOCKIFYING_DISPLAY = new Set(['flex', 'inline-flex', 'grid', 'inline-grid'])
+
+/**
+ * Вычисленный `display` элемента либо `null`, если спросить не у кого.
+ *
+ * `null` — не «неизвестно, считаем блоком», а «признака нет»: вызывающие
+ * при нём откатываются к прежнему поведению по тегам. Иначе оторванный
+ * от окна документ выключил бы инструмент «Текст» целиком.
+ */
+function displayOf(el: Element): string | null {
+  const view = el.ownerDocument.defaultView
+  if (!view) return null
+  try {
+    // Пустая строка — тоже «признака нет»: так отвечают реализации с неполной
+    // таблицей стилей по умолчанию (jsdom не знает строчных вовсе) и
+    // оторванные от документа узлы. Считать её блоком нельзя.
+    return view.getComputedStyle(el).display || null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Строчный ли ребёнок НА САМОМ ДЕЛЕ, а не по имени тега.
+ *
+ * Тег проверяется первым и отсекает почти всё даром: спрашивать вычисленный
+ * стиль у каждого `<div>` внутри каждого предка на каждом движении указателя
+ * значило бы пересчитывать стили чужой страницы десятки раз в секунду.
+ */
+function isInlineChild(child: Element): boolean {
+  if (!INLINE_TAGS.has(child.tagName)) return false
+
+  const display = displayOf(child)
+  if (display === null) return true
+
+  /*
+   * Ребёнок, не создающий бокса, раскладке не мешает и абзац не разрывает.
+   *
+   * Это не педантизм: подпись для программы чтения с экрана — обычно
+   * `<span hidden>` или `span` со скрывающим классом, и таких внутри текста
+   * на живых страницах полно. Посчитай их блоками — и абзац с одной такой
+   * подписью перестал бы быть правимым, а подъём ушёл бы к предку, забрав
+   * половину страницы. Ровно та поломка, которую эта правка и чинит,
+   * только с другой стороны.
+   */
+  if (display === 'none' || display === 'contents') return true
+
+  // Ровно `inline`: `inline-block` и `inline-flex` — собственные боксы,
+  // и значок, вставленный в строку, правится отдельно от неё.
+  return display === 'inline'
+}
+
+/**
+ * Текстовый ли элемент: есть текст, и все дети — строчные.
+ *
+ * ── Почему одного тега мало ─────────────────────────────────────────────────
+ *
+ * Прежде «строчность» ребёнка определялась ИМЕНЕМ ТЕГА, и этого хватало ровно
+ * до первой страницы, где `<span>` используют как плашку. На карточке товара
+ * боевого прототипа заказчика ряд чипов размечен так:
+ *
+ *     <div class="flex flex-wrap gap-2"><span>10 Мбит/с</span><span>…</span></div>
+ *
+ * Четыре отдельные плашки на экране, четыре `<span>` в разметке — и контейнер
+ * выглядел как абзац с разметкой. Подъём до самого внешнего текстового элемента
+ * забирал его целиком, и в окне правки оказывалась строка
+ * «10 Мбит/сДомашнийОфисныйПромышленный»: текст четырёх соседей
+ * встык, без пробелов, потому что `textContent` их и не ставит.
+ *
+ * Отличает одно от другого РАСКЛАДКА, а не разметка, поэтому проверок две:
+ * сам элемент не должен раскладывать детей боксами, и каждый ребёнок должен
+ * быть строчным по вычисленному стилю. Второй проверки хватило бы и одной
+ * (блокификация видна на самих детях), но первая стоит один вызов вместо
+ * N и отсекает случай целиком.
+ */
+export function isTextElement(el: Element): boolean {
+  if (!normalize(el.textContent ?? '')) return false
+
+  const display = displayOf(el)
+  if (display !== null && BLOCKIFYING_DISPLAY.has(display)) return false
+
+  for (const child of el.children) {
+    if (!isInlineChild(child)) return false
+  }
+  return true
+}
+
+/** Находка вместе с числом шагов подъёма: шаги нужны только логу. */
+interface Pick {
+  element: Element | null
+  steps: number
+}
+
+function pickFrom(event: Event): Pick {
+  // Событие собственного интерфейса целью не является никогда: рецензент
+  // нажимает кнопку виджета, а не правит его текст.
+  if (isInsideKalka(event)) return { element: null, steps: 0 }
+
+  const start = event.composedPath()[0]
+  let node: Element | null =
+    start instanceof Element ? start : start instanceof Node ? start.parentElement : null
+
+  let steps = 0
+  while (node && steps <= PICK_MAX_DEPTH) {
+    if (isTextElement(node)) return climbToOutermost(node, steps)
+    node = node.parentElement
+    steps += 1
+  }
+
+  // Подходящего элемента нет: под курсором контейнер с блочными детьми либо
+  // пустое место. Клик по такому месту игнорируется, подсветки нет.
+  return { element: null, steps }
+}
+
+/**
+ * Поднимается до САМОГО ВНЕШНЕГО текстового элемента подряд идущей цепочки.
+ *
+ * Первый попавшийся не годится: `<strong>` внутри абзаца сам по себе текстовый
+ * элемент, и остановка на нём дала бы правку одного слова с якорем на слово —
+ * ровно тот случай, который решение 4 называет проблемой («под курсором может
+ * оказаться `<span>` внутри абзаца»). Подъём прекращается на первом родителе,
+ * который текстовым элементом уже не является: `<section>` с половиной страницы
+ * целью не станет.
+ */
+function climbToOutermost(found: Element, foundAt: number): Pick {
+  let element = found
+  let steps = foundAt
+
+  while (steps < PICK_MAX_DEPTH) {
+    const parent = element.parentElement
+    if (!parent || !isTextElement(parent)) break
+    element = parent
+    steps += 1
+  }
+
+  return { element, steps }
+}
+
+/**
+ * Ближайший вверх по дереву текстовый элемент под указателем события.
+ * `null` — событие внутри виджета либо подходящего элемента не нашлось.
+ */
+export function findTextTarget(event: Event): Element | null {
+  return pickFrom(event).element
+}
+
+/**
+ * Включает режим выбора элемента на странице носителя.
+ * Возвращает ПОЛНОЕ снятие: слушатели сняты, атрибут снят, `<style>` удалён.
+ *
+ * Обработчики обёрнуты `safely`: исключение виджета не имеет права уйти
+ * в код носителя (NFR-06).
+ */
+export function watchPicking(onPick: (el: Element) => void): () => void {
+  let current: Element | null = null
+
+  const style = document.createElement('style')
+  style.setAttribute(HOVER_STYLE_ATTRIBUTE, '')
+  style.textContent = HOVER_CSS
+  // head может отсутствовать на экзотической странице — тогда подсветки просто
+  // не будет, и ронять из-за неё выбор элемента нельзя.
+  document.head?.appendChild(style)
+
+  function highlight(next: Element | null): void {
+    if (next === current) return
+    current?.removeAttribute(HOVER_ATTRIBUTE)
+    current = next
+    current?.setAttribute(HOVER_ATTRIBUTE, '')
+  }
+
+  const onPointerMove = safely(log, 'ведение по странице', (event: Event) => {
+    highlight(pickFrom(event).element)
+  })
+
+  const onClick = safely(log, 'выбор элемента', (event: Event) => {
+    // Клик по собственному интерфейсу не гасится и целью не считается:
+    // перехват в фазе погружения срабатывает РАНЬШЕ гашения на точке
+    // монтирования, и без этой проверки кнопки виджета перестали бы работать.
+    if (isInsideKalka(event)) return
+
+    // Гашение намеренное и действует только пока инструмент включён (решение 3):
+    // иначе клик по правленому заголовку внутри ссылки увёл бы со страницы
+    // вместо открытия редактора. Выключили инструмент — перехват снят целиком.
+    event.preventDefault()
+    event.stopPropagation()
+
+    const { element, steps } = pickFrom(event)
+    if (!element) {
+      log.debug('под курсором нет текстового элемента, клик пропущен')
+      return
+    }
+
+    // Текст элемента в лог не пишется: это содержимое страницы заказчика.
+    log.debug('элемент выбран', { тег: element.tagName.toLowerCase(), шаговВверх: steps })
+    onPick(element)
+  })
+
+  document.addEventListener('pointermove', onPointerMove, true)
+  document.addEventListener('click', onClick, true)
+  log.debug('режим выбора элемента включён')
+
+  return (): void => {
+    document.removeEventListener('pointermove', onPointerMove, true)
+    document.removeEventListener('click', onClick, true)
+    // Страница обязана вернуться к исходному виду: ни атрибута, ни своего
+    // элемента <style> после снятия не остаётся.
+    highlight(null)
+    style.remove()
+    log.debug('режим выбора элемента снят')
+  }
+}
+
+/*
+ * Рисование области и постановка указателя на чужой странице (FR-13, FR-14).
+ *
+ * Живёт здесь по той же причине, что и выбор текстового элемента выше: список
+ * мест, которым разрешено трогать DOM носителя, состоит из четырёх пунктов
+ * (ARCHITECTURE.md), и `shared/lib/dom` — один из них. Слайсы `features/draw-area`
+ * и `features/place-point` эту механику только включают и выключают.
+ *
+ * Вся геометрия ниже — во ВЬЮПОРТНОЙ системе координат: `clientX/clientY`
+ * и `getBoundingClientRect()` уже в ней, и `scrollX/scrollY` не появляется
+ * нигде (решение 9 плана вехи, `shared/lib/geometry.ts`).
+ */
+
+const marks = log.child('marks')
+
+/**
+ * Допуск на дробные пиксели при проверке «рамка помещается в элемент».
+ *
+ * `getBoundingClientRect()` возвращает дробные значения, и рамка, обведённая
+ * ровно по краю блока, промахивалась бы мимо него на сотые доли пикселя —
+ * якорем стал бы предок, а не сам блок.
+ */
+const CONTAIN_TOLERANCE_PX = 1
+
+/**
+ * Элемент носителя в точке вьюпорта.
+ *
+ * Собственные узлы отбрасываются: `elementFromPoint` вернёт host-элемент
+ * «Кальки», если точка попала под её панель или под уже поставленную метку.
+ * Без этой проверки якорем правки стал бы сам виджет, и запись пережила бы
+ * его демонтаж, указывая в никуда (решение 11 плана вехи).
+ */
+export function elementAtPoint(x: number, y: number): Element | null {
+  const found = document.elementFromPoint(x, y)
+  if (!found || found.closest(ROOT_SELECTOR)) return null
+  return found
+}
+
+/** Помещается ли `inner` целиком в `outer` с точностью до дробных пикселей. */
+function contains(outer: DOMRectReadOnly, inner: DOMRectReadOnly): boolean {
+  return (
+    outer.left - CONTAIN_TOLERANCE_PX <= inner.left &&
+    outer.top - CONTAIN_TOLERANCE_PX <= inner.top &&
+    outer.right + CONTAIN_TOLERANCE_PX >= inner.right &&
+    outer.bottom + CONTAIN_TOLERANCE_PX >= inner.bottom
+  )
+}
+
+/**
+ * Элемент-якорь для нарисованной рамки: наименьший предок, в который она
+ * помещается целиком.
+ *
+ * Правило — эвристика, и открытая (решение 11 плана вехи). Обводят обычно
+ * карточку или блок, и «наименьший предок, в который рамка помещается» — это
+ * он и есть. Не нашли за `RECT_ANCHOR_MAX_DEPTH` шагов — берём последний
+ * рассмотренный: якорь предположительный лучше, чем его отсутствие, потому что
+ * доли всё равно считаются от чьего-то bounding box.
+ *
+ * От выбора элемента под курсором (`findTextTarget`) правило отличается
+ * намеренно: там ищется текст, здесь — контейнер.
+ */
+export function pickRectAnchor(drawn: DOMRectReadOnly): Element | null {
+  const start = elementAtPoint(drawn.left + drawn.width / 2, drawn.top + drawn.height / 2)
+  if (!start) {
+    marks.debug('под центром рамки нет элемента носителя')
+    return null
+  }
+
+  let node: Element = start
+  let steps = 0
+
+  while (steps <= RECT_ANCHOR_MAX_DEPTH) {
+    if (contains(node.getBoundingClientRect(), drawn)) {
+      marks.debug('якорь рамки найден', { тег: node.tagName.toLowerCase(), шаговВверх: steps })
+      return node
+    }
+    const parent = node.parentElement
+    if (!parent) break
+    node = parent
+    steps += 1
+  }
+
+  marks.debug('якорь рамки взят последним рассмотренным', {
+    тег: node.tagName.toLowerCase(),
+    шаговВверх: steps,
+  })
+  return node
+}
+
+/** Прямоугольник по двум углам: рисовать можно в любую сторону. */
+function fromCorners(ax: number, ay: number, bx: number, by: number): DOMRect {
+  return new DOMRect(Math.min(ax, bx), Math.min(ay, by), Math.abs(bx - ax), Math.abs(by - ay))
+}
+
+/*
+ * Полное гашение события носителя.
+ *
+ * Это ОСОЗНАННОЕ исключение из правила `app/lib/mount.ts` («stopPropagation — да,
+ * preventDefault — нет»): там речь про события внутри интерфейса виджета, где
+ * preventDefault сломал бы фокус и ввод с клавиатуры, здесь — про перехват
+ * на чужой странице и только пока инструмент выбран. Без preventDefault
+ * рисование рамки превращается в выделение текста и перетаскивание картинок,
+ * без stopPropagation клик по ссылке уводит со страницы вместо постановки
+ * метки. Выключили инструмент — перехват снят целиком (решение 16 плана вехи).
+ */
+function swallow(event: Event): void {
+  event.preventDefault()
+  event.stopPropagation()
+}
+
+/**
+ * Режим рисования области (FR-13).
+ *
+ * `onPreview` получает текущую рамку на каждом движении указателя и `null`
+ * при завершении или отмене — рисует её слой меток. `onDrawn` вызывается
+ * только для рамки, у которой обе стороны не меньше `MARK_MIN_SIZE_PX`:
+ * меньшая рамка — промах мыши, а не область (решение 17 плана вехи).
+ *
+ * Возвращает ПОЛНОЕ снятие: слушатели сняты, предпросмотр погашен.
+ */
+export function watchAreaDrawing(
+  onDrawn: (rect: DOMRectReadOnly) => void,
+  onPreview: (rect: DOMRectReadOnly | null) => void,
+): () => void {
+  let startX = 0
+  let startY = 0
+  let drawing = false
+
+  function stopDrawing(): void {
+    drawing = false
+    onPreview(null)
+  }
+
+  const onPointerDown = safely(marks, 'начало рисования области', (event: Event) => {
+    // Нажатие по собственному интерфейсу не гасится и рисованием не считается:
+    // перехват в фазе погружения срабатывает РАНЬШЕ гашения на точке
+    // монтирования, и без этой проверки кнопки виджета перестали бы работать.
+    if (isInsideKalka(event)) return
+    swallow(event)
+
+    const pointer = event as PointerEvent
+    startX = pointer.clientX
+    startY = pointer.clientY
+    drawing = true
+    onPreview(fromCorners(startX, startY, startX, startY))
+  })
+
+  const onPointerMove = safely(marks, 'ведение рамки', (event: Event) => {
+    if (!drawing) return
+    swallow(event)
+    const pointer = event as PointerEvent
+    onPreview(fromCorners(startX, startY, pointer.clientX, pointer.clientY))
+  })
+
+  const onPointerUp = safely(marks, 'завершение рисования области', (event: Event) => {
+    if (!drawing) return
+    swallow(event)
+
+    const pointer = event as PointerEvent
+    const rect = fromCorners(startX, startY, pointer.clientX, pointer.clientY)
+    stopDrawing()
+
+    if (rect.width < MARK_MIN_SIZE_PX || rect.height < MARK_MIN_SIZE_PX) {
+      marks.debug('рисование отменено', {
+        причина: 'мало',
+        ширина: Math.round(rect.width),
+        высота: Math.round(rect.height),
+      })
+      return
+    }
+
+    // Координаты в лог писать можно: это не текст заказчика.
+    marks.debug('рамка нарисована', {
+      ширина: Math.round(rect.width),
+      высота: Math.round(rect.height),
+    })
+    onDrawn(rect)
+  })
+
+  // Клик приходит после pointerup и гасится отдельно: без него отпускание
+  // кнопки над ссылкой увело бы со страницы уже после того, как рамка снята.
+  const onClick = safely(marks, 'клик во время рисования', (event: Event) => {
+    if (isInsideKalka(event)) return
+    swallow(event)
+  })
+
+  const onKeyDown = safely(marks, 'отмена рисования', (event: Event) => {
+    if (!drawing || (event as KeyboardEvent).key !== 'Escape') return
+    event.stopPropagation()
+    stopDrawing()
+    marks.debug('рисование отменено', { причина: 'Escape' })
+  })
+
+  document.addEventListener('pointerdown', onPointerDown, true)
+  document.addEventListener('pointermove', onPointerMove, true)
+  document.addEventListener('pointerup', onPointerUp, true)
+  document.addEventListener('click', onClick, true)
+  document.addEventListener('keydown', onKeyDown, true)
+  marks.debug('режим рисования области включён')
+
+  return (): void => {
+    document.removeEventListener('pointerdown', onPointerDown, true)
+    document.removeEventListener('pointermove', onPointerMove, true)
+    document.removeEventListener('pointerup', onPointerUp, true)
+    document.removeEventListener('click', onClick, true)
+    document.removeEventListener('keydown', onKeyDown, true)
+    // Незаконченная рамка не переживает выключение инструмента: висящий
+    // предпросмотр без режима рисования — состояние, из которого нет выхода.
+    stopDrawing()
+    marks.debug('режим рисования области снят')
+  }
+}
+
+/**
+ * Режим постановки указателя (FR-14).
+ *
+ * Одного `click` достаточно: у точки нет ни начала, ни ведения — рецензент
+ * просто тыкает в место. Гашение то же и по той же причине: клик по ссылке
+ * обязан поставить метку, а не увести со страницы.
+ */
+export function watchPointPicking(onPicked: (x: number, y: number) => void): () => void {
+  const onClick = safely(marks, 'постановка указателя', (event: Event) => {
+    // События внутри виджета игнорируются целиком: рецензент нажимает кнопку
+    // «Кальки», а не ставит метку на её панели.
+    if (isInsideKalka(event)) return
+    swallow(event)
+
+    const pointer = event as MouseEvent
+    marks.debug('указатель поставлен', {
+      x: Math.round(pointer.clientX),
+      y: Math.round(pointer.clientY),
+    })
+    onPicked(pointer.clientX, pointer.clientY)
+  })
+
+  document.addEventListener('click', onClick, true)
+  marks.debug('режим постановки указателя включён')
+
+  return (): void => {
+    document.removeEventListener('click', onClick, true)
+    marks.debug('режим постановки указателя снят')
+  }
+}

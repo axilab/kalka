@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Калька — клиентская навигация</title>
+    <style>
+      body {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 32px 16px 96px;
+        font-family: Georgia, serif;
+        line-height: 1.6;
+      }
+      nav a {
+        margin-right: 16px;
+      }
+      nav a[aria-current='page'] {
+        font-weight: 700;
+        text-decoration: none;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Личный кабинет</h1>
+
+    <nav>
+      <a href="?kalka&page=tariffs">Тарифы</a>
+      <a href="?kalka&page=payments">Платежи</a>
+      <a href="?kalka&page=support">Поддержка</a>
+    </nav>
+
+    <main></main>
+
+    <p>
+      Страница проверяет, что виджет не мешает клиентской навигации и не исчезает
+      при подмене содержимого. Переприменение слоя правок появится на этапе 2 —
+      здесь его ещё нет и быть не должно.
+    </p>
+
+    <script>
+      // Роутер намеренно ванильный и крошечный: проверяется поведение виджета
+      // при клиентской навигации, а не чужой фреймворк.
+      const PAGES = {
+        tariffs: {
+          title: 'Тарифы',
+          body: 'Домашний, Игровой и Загородный. Стоимость зависит от адреса подключения.',
+        },
+        payments: {
+          title: 'Платежи',
+          body: 'Списание проходит первого числа. Чек приходит на почту в течение суток.',
+        },
+        support: {
+          title: 'Поддержка',
+          body: 'Инженер приезжает в течение двух рабочих дней после заявки.',
+        },
+      }
+
+      function currentPage() {
+        const name = new URLSearchParams(location.search).get('page')
+        return Object.prototype.hasOwnProperty.call(PAGES, name) ? name : 'tariffs'
+      }
+
+      function draw() {
+        const name = currentPage()
+        const page = PAGES[name]
+        const main = document.querySelector('main')
+        main.textContent = ''
+
+        const heading = document.createElement('h2')
+        heading.textContent = page.title
+        const paragraph = document.createElement('p')
+        paragraph.textContent = page.body
+        main.append(heading, paragraph)
+
+        for (const link of document.querySelectorAll('nav a')) {
+          const target = new URLSearchParams(link.getAttribute('href').slice(1)).get('page')
+          if (target === name) link.setAttribute('aria-current', 'page')
+          else link.removeAttribute('aria-current')
+        }
+      }
+
+      document.querySelector('nav').addEventListener('click', (event) => {
+        const link = event.target.closest('a')
+        if (!link) return
+        event.preventDefault()
+        history.pushState({}, '', link.getAttribute('href'))
+        draw()
+      })
+
+      window.addEventListener('popstate', draw)
+      draw()
+    </script>
+
+    <script type="module" src="/src/app/index.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Калька — агрессивный CSS носителя</title>
+    <style>
+      /*
+       * Прямая проверка FR-04: интерфейс виджета обязан выглядеть так же,
+       * как на dev/index.html, несмотря на всё перечисленное ниже.
+       *
+       * Правила для div намеренно с !important: обычный inline-стиль host
+       * проиграл бы им, поэтому критические свойства задаются через
+       * style.setProperty(..., 'important') в app/lib/mount.ts.
+       */
+      * {
+        box-sizing: content-box !important;
+      }
+      body {
+        font-family: 'Comic Sans MS', cursive;
+        font-size: 11px;
+        color: #b30000;
+      }
+      div {
+        margin: 10px !important;
+        padding: 4px !important;
+        border: 1px dashed #b30000 !important;
+        position: static !important;
+        right: auto !important;
+        bottom: auto !important;
+        z-index: -1 !important;
+      }
+      button {
+        font-size: 9px;
+        background: #ffd400;
+        border-radius: 0;
+      }
+      /*
+       * Переменные без префикса объявлены нарочно: all: initial их не сбрасывает,
+       * и они протекли бы внутрь теневого корня. Именно поэтому все свои
+       * переменные носят префикс --kalka-.
+       */
+      :root {
+        --spacing: 40px;
+        --color: #b30000;
+      }
+      body {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 32px 16px 96px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Тарифы на подключение</h1>
+    <p>
+      Та же разметка, что на контрольной странице, но носитель ведёт себя враждебно:
+      навязывает шрифт, размер, цвет, рамки, обнуляет позиционирование и загоняет
+      любой <code>div</code> под содержимое страницы.
+    </p>
+
+    <h2>Что входит в подключение</h2>
+    <ul>
+      <li>Выезд инженера и осмотр помещения</li>
+      <li>Прокладка кабеля до щитка на этаже</li>
+      <li>Настройка оборудования и проверка скорости</li>
+    </ul>
+
+    <div class="card">
+      <h3>Домашний</h3>
+      <p>
+        Скорость до 500 Мбит/с, безлимитный трафик, роутер в аренду.
+        Подходит для семьи из трёх-четырёх человек.
+      </p>
+    </div>
+
+    <button type="button">Кнопка носителя</button>
+
+    <script type="module" src="/src/app/index.ts"></script>
+  </body>
+</html>

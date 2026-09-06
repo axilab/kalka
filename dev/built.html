@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Калька — собранный файл</title>
+    <style>
+      body {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 32px 16px 96px;
+        font-family: Georgia, serif;
+        line-height: 1.6;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Тарифы на подключение</h1>
+    <p>
+      Единственная страница стенда, подключающая <strong>собранный</strong> файл.
+      Требует предварительного <code>npm run build</code>.
+    </p>
+
+    <h2>Что здесь проверяется</h2>
+    <ul>
+      <li>Подключение одной строкой: ни модуля, ни отдельного файла стилей (FR-01).</li>
+      <li>В консоли пусто: логгер вырезан из продакшен-сборки.</li>
+      <li>
+        Без <code>?kalka</code> и при пустом хранилище
+        <code>Object.keys(window).filter((k) =&gt; /kalka/i.test(k))</code>
+        даёт пустой массив — виджет не пишет в глобальную область.
+      </li>
+      <li><code>window.__kalka.unmount()</code> возвращает страницу в исходное состояние.</li>
+    </ul>
+
+    <p>
+      Если дев-сервер не отдаёт <code>../dist/kalka.js</code>, страницу можно открыть
+      прямо из файловой системы: бандл — классический скрипт, этого достаточно.
+      Под <code>file://</code> браузер может запретить доступ к хранилищу; это ожидаемо,
+      и тогда активация работает только через <code>?kalka</code>.
+    </p>
+
+    <script src="../dist/kalka.js"></script>
+  </body>
+</html>

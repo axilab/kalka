@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Калька — инструмент «Текст»</title>
+    <style>
+      body {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 32px 16px 96px;
+        font-family: Georgia, serif;
+        line-height: 1.6;
+      }
+      nav a {
+        margin-right: 16px;
+      }
+      nav a[aria-current='page'] {
+        font-weight: 700;
+        text-decoration: none;
+      }
+      .card {
+        padding: 16px;
+        margin: 16px 0;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+      }
+      .hint {
+        color: #6b7280;
+        font-size: 14px;
+      }
+      .checks {
+        padding: 16px 16px 16px 32px;
+        background: #f7f8fa;
+        border-radius: 8px;
+        font-size: 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Стенд инструмента «Текст»</h1>
+
+    <p class="hint">
+      Фикстур на странице нет: записи здесь создаёт сам инструмент. Нажмите
+      на рейке справа верхнюю кнопку — «Текст», — ведите мышью по странице:
+      элемент под курсором обводится красным. Нажмите на него, и окно правки
+      встанет выноской у этой самой строки. Повторное нажатие кнопки «Текст»
+      выключает инструмент: пока он включён, клики по странице перехватываются.
+      Названия кнопок рейки всплывают по наведению и по фокусу с клавиатуры.
+    </p>
+
+    <ol class="checks">
+      <li>Обводится текст страницы, но не элементы самой «Кальки» (FR-05).</li>
+      <li>Клик открывает окно с текущим текстом; сама страница редактируемой не становится (FR-06).</li>
+      <li>Клик по тексту внутри ссылки открывает окно и не уводит со страницы.</li>
+      <li>Жирный, курсив, ссылка, список и «Убрать оформление» работают — проверять
+        в Chrome, Safari и Firefox отдельно (FR-07).</li>
+      <li>Размер и цвет меняют вид только в окне и уходят отдельным полем (FR-08).</li>
+      <li>«Сохранить» меняет текст на странице сразу, «Отмена» не меняет ничего (FR-09).</li>
+      <li>Повторный клик по правленому месту открывает уже внесённую правку (FR-10).</li>
+      <li>«Удалить правку» возвращает оригинал и снимает пометку (FR-11).</li>
+      <li>Вставка из Word приходит очищенной (FR-12).</li>
+      <li>Уход на второй маршрут и возврат оставляют правку на месте.</li>
+      <li><code>window.__kalka.unmount()</code> возвращает страницу в исходный вид (NFR-06).</li>
+    </ol>
+
+    <nav>
+      <a href="?kalka&page=start">Начало</a>
+      <a href="?kalka&page=second">Второй раздел</a>
+    </nav>
+
+    <!-- Простой заголовок и простой абзац: базовый случай FR-05 и FR-06. -->
+    <h2>Чем занимаемся</h2>
+    <p>Проектирование, изготовление и монтаж подъёмного оборудования.</p>
+
+    <!--
+      Абзац с вложенной строчной разметкой. Проверяет, что wasHtml захвачен
+      целиком и что удаление правки возвращает и <strong>, и <a>, а не голый текст.
+    -->
+    <div class="card">
+      <p id="rich">
+        Мостовые краны для <strong>промышленных объектов</strong>: подробности
+        в <a href="?kalka&page=second">разделе о допусках</a>.
+      </p>
+      <span class="hint">— проверка захвата и восстановления вложенной разметки</span>
+    </div>
+
+    <!-- Пункт списка: цель правки — именно <li>, а не весь <ul>. -->
+    <div class="card">
+      <ul>
+        <li>Грузоподъёмность до 20 тонн</li>
+        <li>Работа в закрытых промышленных помещениях</li>
+      </ul>
+      <span class="hint">— целью обязан стать пункт, а не весь список</span>
+    </div>
+
+    <!--
+      Текст ЦЕЛИКОМ внутри ссылки. Без гашения клика (решение 3) нажатие увело бы
+      на другой маршрут вместо открытия редактора.
+    -->
+    <div class="card">
+      <p><a href="https://example.com/away">Перейти на внешний сайт</a></p>
+      <span class="hint">— клик обязан открыть окно правки, а не увести со страницы</span>
+    </div>
+
+    <!--
+      Две одинаковые строки. Проверяет, что правится та, по которой кликнули:
+      якорь запоминает номер повтора (index), а не только сам текст.
+    -->
+    <div class="card">
+      <p>Подробнее об условиях</p>
+      <p>Подробнее об условиях</p>
+      <span class="hint">— правиться обязана та строка, по которой нажали</span>
+    </div>
+
+    <!--
+      Контейнер с блочными детьми. isTextElement обязан его отвергнуть: целью
+      станет внутренний абзац или заголовок, но не сама карточка (решение 4).
+    -->
+    <div class="card" id="container">
+      <h3>Контейнер с блочными детьми</h3>
+      <p>Первый абзац внутри контейнера.</p>
+      <p>Второй абзац внутри контейнера.</p>
+      <span class="hint">— обводиться обязан внутренний элемент, а не рамка целиком</span>
+    </div>
+
+    <!-- Второй маршрут: сюда ведёт навигация, правки первого сюда не попадают. -->
+    <main></main>
+
+    <script>
+      // Роутер намеренно ванильный: проверяется поведение виджета при клиентской
+      // навигации, а не чужой фреймворк. Уход на второй маршрут и возврат обязаны
+      // оставить сохранённую правку на месте.
+      const PAGES = {
+        start: {
+          title: 'Раздел «Начало»',
+          body: 'Здесь ничего не правим — это якорь маршрута по умолчанию.',
+        },
+        second: {
+          title: 'Раздел «Второй»',
+          body: 'Правка, сделанная здесь, не имеет права появиться на первом разделе.',
+        },
+      }
+
+      function currentPage() {
+        const name = new URLSearchParams(location.search).get('page')
+        return Object.prototype.hasOwnProperty.call(PAGES, name) ? name : 'start'
+      }
+
+      function draw() {
+        const name = currentPage()
+        const page = PAGES[name]
+        const main = document.querySelector('main')
+        main.textContent = ''
+
+        const heading = document.createElement('h2')
+        heading.textContent = page.title
+        const paragraph = document.createElement('p')
+        paragraph.textContent = page.body
+        main.append(heading, paragraph)
+
+        for (const link of document.querySelectorAll('nav a')) {
+          const target = new URLSearchParams(link.getAttribute('href').slice(1)).get('page')
+          if (target === name) link.setAttribute('aria-current', 'page')
+          else link.removeAttribute('aria-current')
+        }
+      }
+
+      document.querySelector('nav').addEventListener('click', (event) => {
+        const link = event.target.closest('a')
+        if (!link) return
+        event.preventDefault()
+        history.pushState({}, '', link.getAttribute('href'))
+        draw()
+      })
+
+      window.addEventListener('popstate', draw)
+      draw()
+    </script>
+
+    <script type="module" src="/src/app/index.ts"></script>
+  </body>
+</html>

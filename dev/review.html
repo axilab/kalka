@@ -1,0 +1,698 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Калька — импорт, разбор и проверка</title>
+    <style>
+      body {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 32px 16px 96px;
+        font-family: Georgia, serif;
+        line-height: 1.6;
+      }
+      nav a {
+        margin-right: 16px;
+      }
+      nav a[aria-current='page'] {
+        font-weight: 700;
+        text-decoration: none;
+      }
+      .card {
+        padding: 16px;
+        margin: 16px 0;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+      }
+      .hint {
+        color: #6b7280;
+        font-size: 14px;
+      }
+      button {
+        font: inherit;
+        padding: 6px 12px;
+        margin: 0 6px 6px 0;
+      }
+      /* Блок стенда: он подделывает передеплой и раздаёт файлы, и обязан
+         отличаться от содержимого прототипа, чтобы его не начали править
+         «Калькой». */
+      .tools {
+        padding: 16px;
+        margin: 24px 0;
+        background: #f6f7f9;
+        border: 2px dashed #b3b8c2;
+        border-radius: 8px;
+      }
+      .tools h2 {
+        margin-top: 0;
+        font-size: 18px;
+      }
+      #dump {
+        max-height: 220px;
+        overflow: auto;
+        padding: 8px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        line-height: 1.4;
+        white-space: pre-wrap;
+        word-break: break-all;
+        background: #fff;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+      }
+      ol.steps {
+        font-size: 15px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Стенд разбора и проверки</h1>
+
+    <nav>
+      <a href="?kalka">Услуги</a>
+      <a href="?kalka&page=support">Поддержка</a>
+    </nav>
+
+    <p class="hint">
+      Что проверяется на этой странице: загрузка правок из файла и накопление
+      нескольких файлов (FR-30, FR-33); список с группировкой по страницам,
+      прокруткой к месту и пометкой уехавших мест (FR-31, FR-32); копирование
+      текста одной кнопкой (FR-34); режим проверки после передеплоя (FR-35).
+    </p>
+
+    <h2 id="services-title">Чем занимаемся</h2>
+    <p id="lead">
+      Проектирование, изготовление и монтаж подъёмного оборудования для
+      промышленных объектов.
+    </p>
+    <p id="drifting">
+      Обследование, ремонт и модернизация ранее установленного оборудования
+      любых производителей.
+    </p>
+
+    <div class="card">
+      <h3 id="card-title">Монтаж под ключ</h3>
+      <p id="card-text">
+        Монтаж ведём собственными бригадами. Сроки поставки зависят от загрузки
+        производства.
+      </p>
+    </div>
+
+    <div class="card">
+      <h3>Гарантия</h3>
+      <p id="vanishing">
+        Гарантия на смонтированное оборудование — двадцать четыре месяца.
+      </p>
+      <p id="warranty">
+        Гарантийные обращения принимаем через личный кабинет и по телефону.
+      </p>
+    </div>
+
+    <main></main>
+
+    <!-- ─────────────────────────────────────────────────────────────────────
+         Стенд.
+
+         Все кнопки ниже работают с DOM самой страницы и с localStorage
+         НАПРЯМУЮ. Так можно: это код страницы стенда, а не код виджета.
+
+         Центральная кнопка здесь — «Изобразить передеплой». Без неё ветка
+         «правка доехала» не проверяется ни разу до встречи с заказчиком,
+         а именно она и есть содержание вехи.
+    ────────────────────────────────────────────────────────────────────── -->
+    <div class="tools">
+      <h2>Стенд: разбор и проверка</h2>
+
+      <p>
+        <button id="deploy" type="button">Изобразить передеплой</button>
+        <button id="undeploy" type="button">Вернуть исходные тексты</button>
+        <button id="shift" type="button">Сдвинуть вёрстку</button>
+      </p>
+      <p>
+        <button id="file-main" type="button">Скачать заготовленный файл</button>
+        <button id="file-second" type="button">Скачать файл второго рецензента</button>
+      </p>
+      <p>
+        <button id="file-foreign" type="button">Скачать файл чужой версии</button>
+        <button id="file-broken" type="button">Скачать испорченный файл</button>
+        <button id="file-partial" type="button">Скачать файл с браком</button>
+      </p>
+      <p>
+        <button id="clear" type="button">Очистить хранилище Кальки</button>
+        <button id="show" type="button">Показать снимок</button>
+      </p>
+
+      <p class="hint" id="tools-report">— готово к работе</p>
+      <div id="dump">Снимок не запрашивался.</div>
+
+      <h3>Порядок проверки</h3>
+      <ol class="steps">
+        <li>
+          <b>Загрузка.</b> Нажмите нижнюю кнопку рейки — «Разбор»: справа
+          откроется ящик во всю высоту. Кнопка «Загрузить правки»
+          есть только здесь, в «Правке» и «Просмотре» её нет. Скачайте
+          заготовленный файл и выберите его: тексты на странице заменены, правки
+          стоят списком, сгруппированным по страницам, группа этой страницы —
+          первой и подписана «эта страница».
+        </li>
+        <li>
+          <b>Повторная загрузка.</b> Выберите ТОТ ЖЕ файл ещё раз: должно
+          появиться «Новых правок нет — этот файл уже загружен», а не молчание.
+        </li>
+        <li>
+          <b>Второй рецензент.</b> Скачайте и загрузите файл второго рецензента:
+          его записи имеют те же идентификаторы, но обязаны добавиться к первым,
+          а не заменить их. Имени автора в списке нет и быть не должно:
+          различать авторов продукт не умеет и не должен.
+        </li>
+        <li>
+          <b>Перезагрузка.</b> Обновите страницу: правки на месте
+          (кнопка «Показать снимок» — в снимке есть блок <code>origins</code>).
+        </li>
+        <li>
+          <b>Чужая версия и брак.</b> «Скачать файл чужой версии» → загрузить:
+          «Файл создан другой версией — правки не загружены», набор не изменился.
+          «Скачать испорченный файл» → «Не удалось прочитать файл». «Скачать файл
+          с браком» → загружается, а число пропущенных записей названо в отчёте.
+        </li>
+        <li>
+          <b>Прокрутка и копирование.</b> Клик по строке правки этой страницы
+          прокручивает к месту и подсвечивает его; подсветка гаснет сама. Строка
+          правки страницы «Поддержка» не кликается и подписана «правка на другой
+          странице». Кнопка копирования кладёт текст в буфер, а на стенде без
+          защищённого соединения вместо неё появляется поле с выделенным текстом.
+        </li>
+        <li>
+          <b>Уехавшие места.</b> «Сдвинуть вёрстку» → в списке появляются пометки
+          «место могло сместиться» и «место не найдено», у второй виден полный
+          текст «было». Клик по ней ничего не прокручивает и говорит об этом
+          словами.
+        </li>
+        <li>
+          <b>Проверка на самообман.</b> «Вернуть исходные тексты», перезагрузите
+          страницу и, НЕ нажимая «Изобразить передеплой», включите «Проверить,
+          что правки доехали»: ни одна правка не должна получить «доехало».
+          Именно здесь наивная реализация показала бы зелёным всё.
+        </li>
+        <li>
+          <b>Проверка после передеплоя.</b> Выйдите из проверки, нажмите
+          «Изобразить передеплой», включите проверку снова: применённые правки
+          помечены «доехало», неприменённые — «не доехало». Правка, чьё место
+          убрали со страницы («Сдвинуть вёрстку»), помечена «непонятно».
+          Записи «пожелание оформления» и «замечание» пометки исхода не получают.
+        </li>
+        <li>
+          <b>Выход из проверки.</b> Кнопка «Выйти из проверки» возвращает правки
+          на страницу и убирает пометки. Уход из режима «Разбор» при включённой
+          проверке — тоже: слой выключенным не остаётся.
+        </li>
+        <li>
+          <b>Вопрос при закрытии.</b> С ТОЛЬКО импортированными правками закрытие
+          вкладки проходит молча. Сделайте собственную правку инструментом
+          «Текст» — браузер начинает переспрашивать.
+        </li>
+        <li>
+          <b>Демонтаж.</b> Выполните в консоли
+          <code>window.__kalka.unmount()</code>: страница возвращается к исходной,
+          подсветки цели не остаётся.
+        </li>
+      </ol>
+
+      <p class="hint">
+        После экспериментов хранилище стенда стоит чистить кнопкой «Очистить
+        хранилище Кальки»: записи прошлого прогона иначе всплывут в следующем.
+      </p>
+    </div>
+
+    <script>
+      // Роутер намеренно ванильный: проверяется поведение виджета при клиентской
+      // навигации, а не чужой фреймворк.
+      const PAGES = {
+        support: {
+          title: 'Поддержка',
+          lead: 'Инженер приезжает за два рабочих дня. Заявки принимаем круглосуточно.',
+          second: 'Плановое обслуживание — раз в полгода по договору.',
+        },
+      }
+
+      function currentPage() {
+        return new URLSearchParams(location.search).get('page') === 'support' ? 'support' : 'main'
+      }
+
+      function draw() {
+        const name = currentPage()
+        const main = document.querySelector('main')
+        main.textContent = ''
+
+        if (name === 'support') {
+          const page = PAGES.support
+          const heading = document.createElement('h2')
+          heading.textContent = page.title
+          const lead = document.createElement('p')
+          lead.id = 'support-lead'
+          lead.textContent = page.lead
+          const second = document.createElement('p')
+          second.id = 'support-second'
+          second.textContent = page.second
+          main.append(heading, lead, second)
+        }
+
+        for (const link of document.querySelectorAll('nav a')) {
+          const target = new URLSearchParams(link.getAttribute('href').slice(1)).get('page')
+          const active = (target ?? 'main') === name
+          if (active) link.setAttribute('aria-current', 'page')
+          else link.removeAttribute('aria-current')
+        }
+      }
+
+      document.querySelector('nav').addEventListener('click', (event) => {
+        const link = event.target.closest('a')
+        if (!link) return
+        event.preventDefault()
+        history.pushState({}, '', link.getAttribute('href'))
+        draw()
+      })
+
+      window.addEventListener('popstate', draw)
+      draw()
+    </script>
+
+    <script>
+      // ── Заготовленные файлы правок ────────────────────────────────────────
+      //
+      // Файл собирается ИЗ ЖИВОГО DOM на загрузке страницы, а не выписан руками:
+      // так селекторы и XPath заведомо валидны, и стенд не начинает врать после
+      // первой же правки разметки. Снимок берётся ОДИН РАЗ, до нажатия любых
+      // кнопок, — иначе «заготовленный файл» после «Сдвинуть вёрстку» описывал
+      // бы уже сдвинутую страницу.
+
+      const ENTRIES_KEY = 'kalka:entries'
+      const BROKEN_KEY = 'kalka:entries:broken'
+      const AUTHOR_KEY = 'kalka:author'
+
+      const report = document.getElementById('tools-report')
+      const dump = document.getElementById('dump')
+
+      function say(text) {
+        report.textContent = `— ${text}`
+      }
+
+      /** Та же нормализация, что и в виджете: пробелы схлопнуты, края обрезаны. */
+      function normalize(value) {
+        return value.replace(/\s+/g, ' ').trim()
+      }
+
+      /** Маршрут страницы: pathname + запрос без параметра kalka + hash. */
+      function routeOf(search) {
+        const params = new URLSearchParams(search)
+        params.delete('kalka')
+        const query = params.toString()
+        return `${location.pathname}${query ? `?${query}` : ''}`
+      }
+
+      /** Позиционный XPath от корня — тот же вид, что строит виджет. */
+      function xpathOf(el) {
+        const parts = []
+        let node = el
+        while (node && node.nodeType === 1 && node !== document.documentElement) {
+          let index = 1
+          for (let sib = node.previousElementSibling; sib; sib = sib.previousElementSibling) {
+            if (sib.tagName === node.tagName) index += 1
+          }
+          parts.unshift(`${node.tagName.toLowerCase()}[${index}]`)
+          node = node.parentElement
+        }
+        return `/html/${parts.join('/')}`
+      }
+
+      const AGENT_FIELDS = {
+        path: '',
+        nearestHeading: '',
+        contextBefore: '',
+        contextAfter: '',
+        occurrencesOnPage: 0,
+      }
+
+      /**
+       * Снимок исходной разметки целей: то, что отдал бы сервер.
+       *
+       * Ключ — сам ЭЛЕМЕНТ, а не его идентификатор: кнопка «Сдвинуть вёрстку»
+       * идентификатор снимает, и поиск по нему после этого вернул бы `null` —
+       * то есть возврат к исходному состоянию тихо перестал бы работать ровно
+       * на той цели, ради которой кнопка и нажата.
+       */
+      const originalHtml = new Map()
+
+      function capture(id) {
+        const el = document.getElementById(id)
+        originalHtml.set(el, el.innerHTML)
+        const was = normalize(el.textContent)
+        return {
+          el,
+          was,
+          wasHtml: el.innerHTML,
+          tag: el.tagName.toLowerCase(),
+          anchor: {
+            selector: `#${id}`,
+            xpath: xpathOf(el),
+            snippet: was.slice(0, 120),
+            index: 0,
+          },
+        }
+      }
+
+      const VIEWPORT = { w: window.innerWidth, h: window.innerHeight }
+      const AT = new Date().toISOString()
+      const ROUTE_MAIN = routeOf(location.search.includes('page=') ? '' : location.search)
+      const ROUTE_SUPPORT = `${location.pathname}?page=support`
+
+      /**
+       * Записи заготовленного файла.
+       *
+       * Тексты `now` у ДОЕЗЖАЮЩИХ правок намеренно без разметки. Причина
+       * техническая и её стоит знать: проверка ищет текст `now` по СОБСТВЕННЫМ
+       * текстовым узлам страницы, а `<b>` внутри разрывает строку на три узла,
+       * ни один из которых не содержит её целиком. Это то же самое известное
+       * ограничение, что и у третьего уровня поиска якоря. Разметка в файле
+       * есть — но у правки, которую «передеплой» намеренно НЕ применяет.
+       */
+      function buildEntries() {
+        const lead = capture('lead')
+        const drifting = capture('drifting')
+        const cardText = capture('card-text')
+        const vanishing = capture('vanishing')
+        const cardTitle = capture('card-title')
+        const warranty = capture('warranty')
+
+        return [
+          {
+            id: 'a1b2c3d4',
+            type: 'text-override',
+            route: ROUTE_MAIN,
+            tag: lead.tag,
+            was: lead.was,
+            wasHtml: lead.wasHtml,
+            now: 'Проектируем, изготавливаем и монтируем подъёмное оборудование под ключ.',
+            style: {},
+            ...AGENT_FIELDS,
+            anchor: lead.anchor,
+            viewport: VIEWPORT,
+            at: AT,
+          },
+          {
+            id: 'b2c3d4e5',
+            type: 'text-override',
+            route: ROUTE_MAIN,
+            tag: cardText.tag,
+            was: cardText.was,
+            wasHtml: cardText.wasHtml,
+            // С разметкой намеренно: «передеплой» эту правку не применяет,
+            // и в списке она обязана показаться текстом, а не отрисоваться.
+            now: 'Монтаж ведём <b>собственными бригадами</b>. Сроки согласуем до договора.',
+            style: {},
+            ...AGENT_FIELDS,
+            anchor: cardText.anchor,
+            viewport: VIEWPORT,
+            at: AT,
+          },
+          {
+            id: 'c3d4e5f6',
+            type: 'text-override',
+            route: ROUTE_MAIN,
+            tag: drifting.tag,
+            was: drifting.was,
+            wasHtml: drifting.wasHtml,
+            now: 'Обследуем, ремонтируем и модернизируем оборудование любых производителей.',
+            style: {},
+            ...AGENT_FIELDS,
+            anchor: drifting.anchor,
+            viewport: VIEWPORT,
+            at: AT,
+          },
+          {
+            id: 'd4e5f6a7',
+            type: 'text-override',
+            route: ROUTE_MAIN,
+            tag: vanishing.tag,
+            was: vanishing.was,
+            wasHtml: vanishing.wasHtml,
+            now: 'Гарантия на смонтированное оборудование — тридцать шесть месяцев.',
+            style: {},
+            ...AGENT_FIELDS,
+            anchor: vanishing.anchor,
+            viewport: VIEWPORT,
+            at: AT,
+          },
+          {
+            // Пожелание оформления: агент его не применяет, и исхода проверки
+            // такая запись не получает.
+            id: 'e5f6a7b8',
+            type: 'style-wish',
+            route: ROUTE_MAIN,
+            tag: cardTitle.tag,
+            was: cardTitle.was,
+            wasHtml: cardTitle.wasHtml,
+            now: '',
+            style: { fontSize: '28px', color: '#b0281a' },
+            ...AGENT_FIELDS,
+            anchor: cardTitle.anchor,
+            viewport: VIEWPORT,
+            at: AT,
+          },
+          {
+            // Замечание: тоже без исхода проверки, зато с геометрией.
+            id: 'f6a7b8c9',
+            type: 'comment',
+            route: ROUTE_MAIN,
+            tag: warranty.tag,
+            was: warranty.was,
+            wasHtml: '',
+            now: 'Добавьте сюда срок ответа на обращение.',
+            style: {},
+            ...AGENT_FIELDS,
+            anchor: warranty.anchor,
+            viewport: VIEWPORT,
+            rect: { x: 0.02, y: 0.1, w: 0.96, h: 0.8 },
+            at: AT,
+          },
+          {
+            // Правка ЧУЖОЙ страницы: она не кликается и в проверке не участвует.
+            // Разметка страницы «Поддержка» рисуется роутером и известна заранее,
+            // поэтому якорь выписан здесь, а не снят с живого DOM.
+            id: '0a1b2c3d',
+            type: 'text-override',
+            route: ROUTE_SUPPORT,
+            tag: 'p',
+            was: PAGES.support.lead,
+            wasHtml: PAGES.support.lead,
+            now: 'Инженер приезжает в течение одного рабочего дня. Заявки принимаем круглосуточно.',
+            style: {},
+            ...AGENT_FIELDS,
+            anchor: {
+              selector: '#support-lead',
+              xpath: '/html/body[1]/main[1]/p[1]',
+              snippet: PAGES.support.lead.slice(0, 120),
+              index: 0,
+            },
+            viewport: VIEWPORT,
+            at: AT,
+          },
+        ]
+      }
+
+      const ENTRIES = buildEntries()
+
+      const ABOUT = {
+        what: 'Правки заказчика к прототипу, снятые виджетом Калька',
+        types: {
+          'text-override': 'заменить текст в исходниках',
+          'style-wish': 'пожелание по оформлению — НЕ применять автоматически',
+          comment: 'замечание в свободной форме — задача человеку',
+        },
+        rule: 'Если место правки не найдено однозначно — не угадывать, вынести в отчёт',
+      }
+
+      function fileOf(author, entries, format = 1) {
+        return {
+          format,
+          site: location.origin,
+          author,
+          exportedAt: AT,
+          about: ABOUT,
+          entries,
+        }
+      }
+
+      function download(name, text) {
+        const blob = new Blob([text], { type: 'application/json' })
+        const url = URL.createObjectURL(blob)
+        const anchor = document.createElement('a')
+        anchor.href = url
+        anchor.download = name
+        anchor.style.display = 'none'
+        document.body.appendChild(anchor)
+        anchor.click()
+        anchor.remove()
+        setTimeout(() => URL.revokeObjectURL(url), 60_000)
+      }
+
+      document.getElementById('file-main').addEventListener('click', () => {
+        download('kalka-стенд.json', JSON.stringify(fileOf('Ирина Петровна', ENTRIES), null, 2))
+        say('заготовленный файл скачан — загрузите его в режиме «Разбор»')
+      })
+
+      document.getElementById('file-second').addEventListener('click', () => {
+        // Идентификаторы НАМЕРЕННО те же самые: это единственный способ пройти
+        // руками ветку «столкновение id между файлами двух рецензентов».
+        const entries = [
+          { ...ENTRIES[0], now: 'Монтируем подъёмное оборудование для промышленных объектов.' },
+          { ...ENTRIES[2], now: 'Ремонтируем и модернизируем оборудование любых марок.' },
+        ]
+        download('kalka-стенд-второй.json', JSON.stringify(fileOf('Сергей', entries), null, 2))
+        say('файл второго рецензента скачан — у записей те же идентификаторы')
+      })
+
+      document.getElementById('file-foreign').addEventListener('click', () => {
+        download(
+          'kalka-стенд-версия-2.json',
+          JSON.stringify(fileOf('Ирина Петровна', ENTRIES, 2), null, 2),
+        )
+        say('файл чужой версии скачан — он обязан отклониться целиком')
+      })
+
+      document.getElementById('file-broken').addEventListener('click', () => {
+        download('kalka-стенд-испорченный.json', '{это не JSON, и не притворяется')
+        say('испорченный файл скачан')
+      })
+
+      document.getElementById('file-partial').addEventListener('click', () => {
+        // Две заведомо негодные записи: без якоря и с неизвестным типом. Годные
+        // при этом обязаны загрузиться, а число пропущенных — прозвучать вслух.
+        //
+        // Автор у файла СВОЙ, отличный от остальных: иначе его записи отсеются
+        // дедупликацией как уже виденные, отчёт скажет «новых правок нет»,
+        // и ветка «две записи пропущено» не будет пройдена ни разу.
+        const entries = [
+          ENTRIES[0],
+          { ...ENTRIES[1], anchor: undefined },
+          { ...ENTRIES[2], type: 'что-то-новое' },
+          ENTRIES[3],
+        ]
+        download('kalka-стенд-с-браком.json', JSON.stringify(fileOf('Ольга', entries), null, 2))
+        say('файл с браком скачан — двух записей в нём не хватает')
+      })
+
+      // ── Подделка передеплоя ───────────────────────────────────────────────
+      //
+      // Настоящий передеплой отдаёт СВЕЖУЮ разметку: наших меток
+      // `data-kalka-applied` в ней нет. Поэтому кнопка не только меняет тексты,
+      // но и снимает метки — иначе виджет решил бы, что элемент по-прежнему его,
+      // и проверка сравнивала бы не то.
+
+      /** Правки, которые «агент применил». Остальные обязаны стать «не доехало». */
+      const DEPLOYED = ['a1b2c3d4', '0a1b2c3d']
+
+      /**
+       * Отдаёт страницу такой, какой её отдал бы сервер: исходная разметка целей
+       * и НИ ОДНОЙ нашей метки.
+       *
+       * Обязательный первый шаг всех трёх кнопок ниже, а не перестраховка. Пока
+       * слой поднят, в целях стоит текст `now`, который написал ВИДЖЕТ. Снять
+       * метку и оставить этот текст значило бы подсунуть проверке страницу, где
+       * не доехавшая правка выглядит доехавшей, — то есть заставить стенд врать
+       * ровно тем цветом, ради проверки которого он и написан.
+       */
+      function serveFreshHtml() {
+        for (const [el, html] of originalHtml) el.innerHTML = html
+
+        const supportLead = document.getElementById('support-lead')
+        if (supportLead) supportLead.textContent = PAGES.support.lead
+
+        for (const el of document.querySelectorAll('[data-kalka-applied]')) {
+          el.removeAttribute('data-kalka-applied')
+        }
+      }
+
+      document.getElementById('deploy').addEventListener('click', () => {
+        serveFreshHtml()
+
+        let done = 0
+        for (const entry of ENTRIES) {
+          if (!DEPLOYED.includes(entry.id)) continue
+          const el = document.querySelector(entry.anchor.selector)
+          if (!el) continue
+          el.innerHTML = entry.now
+          done += 1
+        }
+        say(`передеплой изображён: применено правок ${done} — включайте проверку`)
+      })
+
+      document.getElementById('undeploy').addEventListener('click', () => {
+        serveFreshHtml()
+        say('исходные тексты возвращены')
+      })
+
+      document.getElementById('shift').addEventListener('click', () => {
+        serveFreshHtml()
+
+        // Первая цель уезжает: идентификатор снят, класс переименован, абзац
+        // переставлен — селектор и XPath не находят, фрагмент текста находит.
+        // Виджет обязан пометить это как «место могло сместиться».
+        const drifting = document.querySelector('#drifting, p.moved')
+        if (drifting) {
+          drifting.removeAttribute('id')
+          drifting.className = 'moved'
+          document.querySelector('.card')?.appendChild(drifting)
+        }
+
+        // Вторая цель теряется совсем: текст заменён целиком, и найти её нечем
+        // ни одним из трёх уровней. Виджет обязан пометить «место не найдено».
+        const vanishing = document.getElementById('vanishing')
+        if (vanishing) {
+          vanishing.textContent = 'Условия гарантии уточняйте у менеджера.'
+        }
+
+        say('вёрстка сдвинута — посмотрите пометки в списке правок')
+      })
+
+      document.getElementById('clear').addEventListener('click', () => {
+        let removed = 0
+        for (const key of Object.keys(localStorage)) {
+          if (!key.startsWith('kalka:')) continue
+          localStorage.removeItem(key)
+          removed += 1
+        }
+        say(`снято ключей Кальки: ${removed} — перезагрузите страницу`)
+      })
+
+      document.getElementById('show').addEventListener('click', () => {
+        // Печатается НА СТРАНИЦУ, а не в консоль: по снимку проверяется блок
+        // origins, и листать его в консоли неудобно.
+        const parts = []
+        for (const [label, key] of [
+          ['kalka:entries', ENTRIES_KEY],
+          ['kalka:entries:broken', BROKEN_KEY],
+          ['kalka:author', AUTHOR_KEY],
+        ]) {
+          const raw = localStorage.getItem(key)
+          if (raw === null) {
+            parts.push(`── ${label} ──\n(пусто)`)
+            continue
+          }
+          let body = raw
+          try {
+            body = JSON.stringify(JSON.parse(raw), null, 2)
+          } catch {
+            body = `(не разбирается как JSON, ${raw.length} знаков)\n${raw}`
+          }
+          parts.push(`── ${label} ──\n${body}`)
+        }
+        dump.textContent = parts.join('\n\n')
+        say('снимок показан ниже')
+      })
+    </script>
+
+    <script type="module" src="/src/app/index.ts"></script>
+  </body>
+</html>

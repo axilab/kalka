@@ -1,0 +1,82 @@
+import type { JSX } from 'preact'
+import { useEffect, useState } from 'preact/hooks'
+import type { Entry } from 'shared/model/format'
+import { Button } from 'shared/ui/Button'
+
+export interface CommentEditorProps {
+  /**
+   * Черновик новой метки либо уже сохранённая запись, по метке которой кликнули.
+   *
+   * ⚠ Сюда приходит ТОЛЬКО запись типа `comment`, и на этом держится заголовок
+   * ниже. Черновики рождают инструменты «Область» и «Указатель» — оба создают
+   * замечания; сохранённую запись сюда приводит нажатие по метке, а метки
+   * правок текста не нажимаются вовсе (`MarkLayer`, `Marker`). Открой это окно
+   * для `text-override` — и «Сохранить» подменило бы набранную разметку голым
+   * текстом, а «Удалить» снесло бы правку целиком.
+   */
+  entry: Entry
+  /** `true` — запись уже в хранилище, и её можно удалить (FR-16). */
+  existing: boolean
+  onSave: (comment: string) => void
+  onRemove: () => void
+  onCancel: () => void
+  /**
+   * Отдать корневой узел слою: позицию выноски пишет он, тем же кадром
+   * и тем же измерением, что и позиции меток.
+   *
+   * Ссылкой-обратным-вызовом, а не `ref`: функциональные компоненты Preact
+   * `ref` не пробрасывают, а заворачивать окно в `forwardRef` ради одной
+   * строки — лишний слой. Тот же приём уже используется у `Marker`.
+   */
+  attach?: (node: HTMLElement | null) => void
+}
+
+/**
+ * Окно ввода замечания (FR-13, FR-14, FR-15, FR-16).
+ *
+ * Замечание — ОБЫЧНЫЙ ТЕКСТ, и это видно по коду: `dangerouslySetInnerHTML`
+ * здесь не появляется ни в каком виде, ни на чтении, ни на записи. Разметка
+ * в замечании не нужна — это текст человеку, а не текст для подстановки
+ * в исходники, — а раз как HTML он не разбирается нигде, то и санитизировать
+ * нечего (решение 4 плана вехи).
+ *
+ * Подписи по-русски и без технических терминов: рецензент не видит ни «якоря»,
+ * ни «области в долях» (FR-36).
+ */
+export function CommentEditor({
+  entry,
+  existing,
+  onSave,
+  onRemove,
+  onCancel,
+  attach,
+}: CommentEditorProps): JSX.Element {
+  const [comment, setComment] = useState(entry.now)
+
+  // Открытие окна для другой метки обязано показать ЕЁ замечание, а не то,
+  // что осталось от предыдущей: состояние поля привязано к записи по id.
+  useEffect(() => setComment(entry.now), [entry.id])
+
+  return (
+    <div class="kalka-comment" ref={attach}>
+      <p class="kalka-title">{entry.rect ? 'Замечание к области' : 'Замечание к месту'}</p>
+
+      <textarea
+        class="kalka-comment__area"
+        value={comment}
+        placeholder="Что здесь не так?"
+        onInput={(event) => setComment((event.target as HTMLTextAreaElement).value)}
+      />
+
+      <div class="kalka-row">
+        <Button primary onClick={() => onSave(comment)}>
+          Сохранить
+        </Button>
+        <Button onClick={onCancel}>Отмена</Button>
+        {/* «Удалить» есть только у уже сохранённой записи: удалять несохранённое
+            нечего, а кнопка обещала бы обратное (FR-16). */}
+        {existing && <Button onClick={onRemove}>Удалить</Button>}
+      </div>
+    </div>
+  )
+}
