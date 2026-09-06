@@ -378,8 +378,13 @@ body {
   width: 12px; height: 12px; margin: -6px 0 0 -6px;
   border-radius: 50%; border: 2px solid #d92d20; background: rgba(217,45,32,.18);
 }
+/* Номер стоит НАД рамкой, а не поверх её угла. Внутри масштабируемого узла
+   он ужимался вместе с картинкой и никому не мешал; настоящие 14 px против
+   колонки в 240 px накрывают собой первые буквы отмеченного текста — то есть
+   ровно то, ради чего метка и поставлена. Место над рамкой есть всегда: окно
+   берётся с запасом вокруг якоря. */
 .mark__no {
-  position: absolute; top: -8px; left: -8px;
+  position: absolute; top: -16px; left: -2px;
   min-width: 14px; height: 14px; border-radius: 7px; padding: 0 3px;
   background: #d92d20; color: #fff; font: 600 9px/14px sans-serif;
   text-align: center;
