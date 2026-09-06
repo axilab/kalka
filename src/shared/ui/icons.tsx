@@ -1,5 +1,7 @@
 import type { JSX } from 'preact'
 
+import type { Tool } from 'shared/model/ui'
+
 /*
  * Иконный набор интерфейса.
  *
@@ -40,18 +42,71 @@ import type { JSX } from 'preact'
  */
 
 /**
- * Общие атрибуты всех иконок. Один объект на набор, а не повтор на каждой:
- * минификатор свернёт его в одну ссылку.
+ * Контуры значков ИНСТРУМЕНТОВ, отдельно от компонентов.
+ *
+ * Значок инструмента рисуется в двух местах: компонентом Preact в интерфейсе
+ * виджета и СТРОКОЙ — в бирке печатного отчёта, который собирается разметкой,
+ * а не деревом. Второй набор контуров означал бы, что один и тот же след
+ * инструмента живёт в двух местах и расходится при первой же правке.
+ *
+ * Данные лежат здесь, а не в отдельном модуле без JSX: `icons.tsx` уже целиком
+ * в бандле, потому что теми же значками рисуется палитра инструментов, — новый
+ * файл не сэкономил бы ни байта, зато развёл бы контур и его компонент.
  */
-const svg = {
+export interface IconShape {
+  /** Атрибут `d` штрихового контура. */
+  d: string
+  /**
+   * Залитый кружок поверх контура. Есть ТОЛЬКО у «Указателя».
+   *
+   * Кружок нельзя выразить путём, не потеряв заливку, а склеить его в `d`
+   * значило бы соврать про форму следа. У «Текста» и «Области» поля просто нет —
+   * частный случай обрабатывается общим типом, а не веткой у потребителя.
+   */
+  dot?: { cx: number; cy: number; r: number }
+}
+
+/*
+ * `as const satisfies` вместо простой аннотации типа.
+ *
+ * Аннотация `Readonly<Record<Tool, IconShape>>` сделала бы `dot` необязательным
+ * у ВСЕХ трёх, и `ICON_PATHS.point.dot` пришлось бы разыменовывать восклицательным
+ * знаком в каждом потребителе — то есть утверждать руками ровно то, что здесь
+ * записано буквально. `satisfies` проверяет тот же контракт и оставляет литеральные
+ * типы: у «Указателя» кружок известен, у остальных его нет вовсе.
+ */
+export const ICON_PATHS = {
+  text: { d: 'M3.5 4.5v-1h9v1M8 3.5v9M6 12.5h4' },
+  area: { d: 'M3 6V3h3M13 6V3h-3M3 10v3h3M13 10v3h-3' },
+  point: { d: 'M4.9 11.1 8 8M9.5 2.5h4v4h-4z', dot: { cx: 3.5, cy: 12.5, r: 1.5 } },
+} as const satisfies Readonly<Record<Tool, IconShape>>
+
+/**
+ * Геометрия штриха, общая набору интерфейса и бирке отчёта.
+ *
+ * Здесь ТОЛЬКО то, что задаёт форму. `width`/`height`, `stroke: currentColor`,
+ * `aria-hidden` и класс кнопки в этот объект не входят намеренно: отчёт — отдельный
+ * документ, класса кнопки в нём нет, размер бирки он выбирает свой, а цвет берёт
+ * из своей палитры. Возьми он объект целиком — в каждую строку описи уехал бы
+ * мёртвый класс виджета.
+ */
+export const ICON_GEOMETRY = {
   viewBox: '0 0 16 16',
-  width: '16',
-  height: '16',
   fill: 'none',
-  stroke: 'currentColor',
   'stroke-width': '1.6',
   'stroke-linecap': 'round',
   'stroke-linejoin': 'round',
+} as const
+
+/**
+ * Общие атрибуты всех иконок ИНТЕРФЕЙСА. Один объект на набор, а не повтор
+ * на каждой: минификатор свернёт его в одну ссылку.
+ */
+const svg = {
+  ...ICON_GEOMETRY,
+  width: '16',
+  height: '16',
+  stroke: 'currentColor',
   'aria-hidden': 'true',
   class: 'kalka-button__icon',
 } as const
@@ -60,7 +115,7 @@ const svg = {
 export function IconText(): JSX.Element {
   return (
     <svg {...svg}>
-      <path d="M3.5 4.5v-1h9v1M8 3.5v9M6 12.5h4" />
+      <path d={ICON_PATHS.text.d} />
     </svg>
   )
 }
@@ -74,7 +129,7 @@ export function IconText(): JSX.Element {
 export function IconArea(): JSX.Element {
   return (
     <svg {...svg}>
-      <path d="M3 6V3h3M13 6V3h-3M3 10v3h3M13 10v3h-3" />
+      <path d={ICON_PATHS.area.d} />
     </svg>
   )
 }
@@ -87,8 +142,14 @@ export function IconArea(): JSX.Element {
 export function IconPoint(): JSX.Element {
   return (
     <svg {...svg}>
-      <circle cx="3.5" cy="12.5" r="1.5" fill="currentColor" stroke="none" />
-      <path d="M4.9 11.1 8 8M9.5 2.5h4v4h-4z" />
+      <circle
+        cx={ICON_PATHS.point.dot.cx}
+        cy={ICON_PATHS.point.dot.cy}
+        r={ICON_PATHS.point.dot.r}
+        fill="currentColor"
+        stroke="none"
+      />
+      <path d={ICON_PATHS.point.d} />
     </svg>
   )
 }
