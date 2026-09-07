@@ -1,5 +1,6 @@
 import { cutoutBuffer, makeCutout } from 'entities/cutout'
 import { entryStore, sanitizeHtml } from 'entities/entry'
+import { usesTextPath } from 'shared/lib/dom'
 import { createLogger } from 'shared/lib/log'
 import type { Entry } from 'shared/model/format'
 import type { Cutout } from 'shared/model/layer'
@@ -67,13 +68,26 @@ export function cutoutFor(entry: Entry, doc: Document): Cutout | null {
     return null
   }
 
-  // Элемент правки текста несёт «стало», а на картинке должно быть «было».
-  // Подмена идёт в ОТСОЕДИНЁННОМ клоне — страница носителя не трогается вовсе.
-  // Пустой `wasHtml` подстановкой не считается: у записи, снятой до вехи
-  // машиночитаемости, он может быть пуст, и подстановка стёрла бы содержимое
-  // кадра, оставив пустую картинку вместо честной.
+  /*
+   * Элемент правки текста несёт «стало», а на картинке должно быть «было».
+   * Подмена идёт в ОТСОЕДИНЁННОМ клоне — страница носителя не трогается вовсе.
+   *
+   * Пустой `wasHtml` подстановкой не считается: у записи, снятой до вехи
+   * машиночитаемости, он может быть пуст, и подстановка стёрла бы содержимое
+   * кадра, оставив пустую картинку вместо честной. Пустой `was` — то же самое
+   * и по той же причине.
+   *
+   * Путь выбирается по `usesTextPath(element, entry.wasHtml)`. Второй аргумент
+   * обязателен и здесь: элемент в момент печати несёт «стало», то есть уже
+   * наложенное, и спрашивать структуру у него значило бы получать разные
+   * ответы на разных проходах.
+   */
+  const подменяем = entry.type === 'text-override'
+  const текстовыйПуть = подменяем && usesTextPath(element, entry.wasHtml)
+
+  const replaceText = текстовыйПуть && entry.was !== '' ? entry.was : undefined
   const replaceContent =
-    entry.type === 'text-override' && entry.wasHtml !== ''
+    !текстовыйПуть && подменяем && entry.wasHtml !== ''
       ? sanitizeHtml(entry.wasHtml, doc)
       : undefined
 
@@ -85,12 +99,14 @@ export function cutoutFor(entry: Entry, doc: Document): Cutout | null {
     // ширину страницы у любой записи.
     wide: entry.type === 'comment',
     replaceContent,
+    replaceText,
   })
 
   log.debug(cutout === null ? 'вырезку на месте снять не удалось' : 'вырезка снята на месте', {
     id: entry.id,
     тип: entry.type,
-    подмена: replaceContent !== undefined,
+    подмена: replaceContent !== undefined || replaceText !== undefined,
+    путь: текстовыйПуть ? 'текст' : 'разметка',
   })
 
   return cutout

@@ -5,6 +5,7 @@ import {
   CUTOUT_FRAME_FULL_WIDTH_RATIO,
   CUTOUT_FRAME_MAX_DEPTH,
 } from 'shared/config/constants'
+import { freezeMotion } from 'shared/lib/dom'
 import { createLogger } from 'shared/lib/log'
 import { safely } from 'shared/lib/safe'
 import type { Cutout } from 'shared/model/layer'
@@ -77,6 +78,12 @@ export interface MakeCutoutInput {
    * картинке должно быть «было». Оговорки — в шапке `build.ts`.
    */
   replaceContent?: Node
+  /**
+   * То же самое СТРОКОЙ — для правки кнопки или ссылки, у которой «было» это
+   * текст, а не разметка. Задан РОВНО ОДИН из двух; оговорки — в шапке
+   * `build.ts`.
+   */
+  replaceText?: string
 }
 
 export interface CaptureInput extends MakeCutoutInput {
@@ -147,21 +154,45 @@ function pageWide(anchor: Element): Element {
   return frame
 }
 
-/** Порядок съёмки в одном экземпляре: проверить → расширить кадр → собрать. */
-function shoot({ anchor, wide, replaceContent }: MakeCutoutInput): CutoutOutcome {
-  // Проверяется ЯКОРЬ, а не кадр: у замечаний кадр шире якоря, но собственный
-  // цвет текста контейнера к правке отношения не имеет.
-  const check = checkCutout(anchor)
-  if (!check.ok) return { cutout: null, check, failed: 'контраст' }
+/**
+ * Порядок съёмки в одном экземпляре: проверить → расширить кадр → собрать.
+ *
+ * ── Заморозка движения стоит ИМЕННО ЗДЕСЬ, и место выбрано не наугад ────────
+ *
+ * Входов съёмки два — синхронный `makeCutout`, который зовёт отчёт в момент
+ * печати, и отложенный `captureCutout`, — и оба проходят через `shoot`.
+ * Поставь заморозку в одном из входов, и второй останется без неё.
+ *
+ * Отсюда под заморозку попадают и `checkCutout`, и `buildCutout`, то есть
+ * проверка контраста, замер геометрии и перенос стилей приходятся на ОДНО
+ * мгновение — ровно то, ради чего заморозка и заводится. Отсрочка
+ * `CUTOUT_CAPTURE_IDLE_MS` ловушкой быть перестаёт сама собой: `setTimeout`
+ * зовёт `shoot` уже внутри, и заморозка оборачивает сам вызов сборки,
+ * а не стоит раньше отложенного вызова.
+ *
+ * `try/finally` обязателен: страница обязана вернуться к исходному виду даже
+ * тогда, когда съёмка бросила (NFR-06).
+ */
+function shoot({ anchor, wide, replaceContent, replaceText }: MakeCutoutInput): CutoutOutcome {
+  const unfreeze = freezeMotion(anchor.ownerDocument)
 
-  // Кадр во всю ширину берётся у ЛЮБОЙ записи: место узнают по окружению,
-  // а не по вырванной строке. `wide` управляет теперь не шириной кадра,
-  // а высотой видимой полосы — у замечаний окрестности нужно больше.
-  const frame = pageWide(anchor)
-  const bandPad = wide ? CUTOUT_BAND_PAD_WIDE_PX : CUTOUT_BAND_PAD_PX
-  const cutout = buildCutout({ anchor, frame, bandPad, replaceContent })
+  try {
+    // Проверяется ЯКОРЬ, а не кадр: у замечаний кадр шире якоря, но собственный
+    // цвет текста контейнера к правке отношения не имеет.
+    const check = checkCutout(anchor)
+    if (!check.ok) return { cutout: null, check, failed: 'контраст' }
 
-  return { cutout, check, failed: cutout === null ? 'кадр' : null }
+    // Кадр во всю ширину берётся у ЛЮБОЙ записи: место узнают по окружению,
+    // а не по вырванной строке. `wide` управляет теперь не шириной кадра,
+    // а высотой видимой полосы — у замечаний окрестности нужно больше.
+    const frame = pageWide(anchor)
+    const bandPad = wide ? CUTOUT_BAND_PAD_WIDE_PX : CUTOUT_BAND_PAD_PX
+    const cutout = buildCutout({ anchor, frame, bandPad, replaceContent, replaceText })
+
+    return { cutout, check, failed: cutout === null ? 'кадр' : null }
+  } finally {
+    unfreeze()
+  }
 }
 
 /**
@@ -189,9 +220,15 @@ export function makeCutout(input: MakeCutoutInput): Cutout | null {
  *
  * В лог не уходят ни текст правки, ни содержимое вырезки.
  */
-export function captureCutout({ entryId, anchor, wide, replaceContent }: CaptureInput): void {
+export function captureCutout({
+  entryId,
+  anchor,
+  wide,
+  replaceContent,
+  replaceText,
+}: CaptureInput): void {
   const run = safely(log, `съёмка вырезки ${entryId}`, () => {
-    const { cutout, check, failed } = shoot({ anchor, wide, replaceContent })
+    const { cutout, check, failed } = shoot({ anchor, wide, replaceContent, replaceText })
 
     if (failed === 'контраст') {
       log.warn('вырезка не снята: не прошла самопроверку', {

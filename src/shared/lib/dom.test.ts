@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  freezeMotion,
   isInsideKalka,
   isTextElement,
   onDocumentReady,
@@ -440,5 +441,113 @@ describe('writeTextNodes', () => {
 
     expect(normalize(кнопка.textContent ?? '')).toBe('Купить')
     expect(кнопка.querySelector('#значок')).not.toBeNull()
+  })
+})
+
+/*
+ * Заморозка движения на время съёмки вырезки.
+ *
+ * Тесты здесь не формальность. «Страница обязана вернуться к исходному виду» —
+ * ровно то свойство, которое молча не выполняется и глазами на бумаге не
+ * ловится: своего `<style>`, забытого в чужом `<head>`, никто не увидит,
+ * а остановленное нами видео просто больше не пойдёт.
+ */
+describe('freezeMotion', () => {
+  let анимации: { playState: string; pause: () => void; play: () => void }[]
+
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    анимации = []
+    document.getAnimations = () => анимации as unknown as Animation[]
+  })
+
+  afterEach(() => {
+    document.body.innerHTML = ''
+    Reflect.deleteProperty(document, 'getAnimations')
+  })
+
+  function анимация(playState: string): {
+    playState: string
+    paused: number
+    played: number
+    pause: () => void
+    play: () => void
+  } {
+    const a = {
+      playState,
+      paused: 0,
+      played: 0,
+      pause(): void {
+        a.paused += 1
+      },
+      play(): void {
+        a.played += 1
+      },
+    }
+    анимации.push(a)
+    return a
+  }
+
+  /** `<video>` с управляемым `paused`: jsdom проигрывать ничего не умеет. */
+  function видео(paused: boolean): { el: HTMLVideoElement; paused: number; played: number } {
+    const el = document.createElement('video')
+    const state = { el, paused: 0, played: 0 }
+    Object.defineProperty(el, 'paused', { value: paused, configurable: true })
+    el.pause = (): void => {
+      state.paused += 1
+    }
+    el.play = (): Promise<void> => {
+      state.played += 1
+      return Promise.resolve()
+    }
+    document.body.append(el)
+    return state
+  }
+
+  it('после снятия своего <style> в <head> не остаётся', () => {
+    const unfreeze = freezeMotion(document)
+    expect(document.head.querySelector('style[data-kalka-freeze-style]')).not.toBeNull()
+
+    unfreeze()
+
+    // Ни элемента, ни атрибутов на чужих узлах: страница вернулась к исходному
+    // виду целиком.
+    expect(document.head.querySelector('style[data-kalka-freeze-style]')).toBeNull()
+  })
+
+  it('возобновляются ТОЛЬКО те анимации, что шли до заморозки', () => {
+    const шла = анимация('running')
+    const стояла = анимация('paused')
+
+    const unfreeze = freezeMotion(document)
+    unfreeze()
+
+    expect(шла.paused).toBe(1)
+    expect(шла.played).toBe(1)
+    // Проверяется не только остановленное, но и УЦЕЛЕВШЕЕ: пауза, поставленная
+    // носителем, нашими руками сниматься не имеет права.
+    expect(стояла.paused).toBe(0)
+    expect(стояла.played).toBe(0)
+  })
+
+  it('возобновляются ТОЛЬКО те видео, что играли', () => {
+    const играло = видео(false)
+    const стояло = видео(true)
+
+    const unfreeze = freezeMotion(document)
+    unfreeze()
+
+    expect(играло.paused).toBe(1)
+    expect(играло.played).toBe(1)
+    expect(стояло.paused).toBe(0)
+    expect(стояло.played).toBe(0)
+  })
+
+  it('носитель без getAnimations съёмку не роняет', () => {
+    Reflect.deleteProperty(document, 'getAnimations')
+
+    // Правило в `<style>` уже стоит, и ронять из-за экзотического носителя
+    // всю съёмку незачем.
+    expect(() => freezeMotion(document)()).not.toThrow()
   })
 })

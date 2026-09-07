@@ -120,6 +120,44 @@ describe('cutoutFor', () => {
     expect(cutout?.html).toContain('Было <b>так</b>')
   })
 
+  it('у правки кнопки «было» подставляется ТЕКСТОМ, а значок уцелевает', () => {
+    /*
+     * Весь путь съёмки целиком, вместе с `pageWide`: правило патча
+     * 2026-09-06-21.55 про дефект на стыке слайсов — тест обязан стоять
+     * и здесь, а не только в `entities/cutout`.
+     *
+     * Живой элемент в момент печати несёт «стало», то есть уже наложенное.
+     * Именно поэтому путь считается по `wasHtml` записи, а не по нему.
+     */
+    const entry: Entry = {
+      ...entryOf('t1', 'text-override'),
+      tag: 'button',
+      was: 'Оформить заказ',
+      wasHtml: '<svg id="значок"></svg>Оформить заказ',
+      now: 'Купить сейчас',
+    }
+
+    host.innerHTML =
+      '<section style="background-color: rgb(255, 255, 255)">' +
+      '<button style="color: rgb(20, 20, 20)"><svg id="значок"></svg>Купить сейчас</button>' +
+      '<p>Соседний абзац</p></section>'
+    sized(host.firstElementChild as Element, { w: window.innerWidth, h: 300 })
+    const el = sized(host.querySelector('button') as Element, { w: 320, h: 40 })
+    entryStore.seed([entry])
+    entryStore.setStatus(entry.id, 'applied', 'selector', el)
+
+    const cutout = cutoutFor(entry, document)
+
+    expect(cutout?.html).toContain('Оформить заказ')
+    expect(cutout?.html).not.toContain('Купить сейчас')
+    // Проверяется и подставленное, и УЦЕЛЕВШЕЕ: значок на кнопке и соседи
+    // по секции.
+    expect(cutout?.html).toContain('<svg')
+    expect(cutout?.html).toContain('Соседний абзац')
+    // Страница носителя не тронута: подмена шла в отсоединённом клоне.
+    expect(el.textContent).toBe('Купить сейчас')
+  })
+
   it('снятое на месте в буфер НЕ пишется', () => {
     // Буфер существует ради записей с ДРУГИХ страниц. Место, найденное здесь,
     // доступно, пока страница открыта: писать его в буфер значило бы ускорять

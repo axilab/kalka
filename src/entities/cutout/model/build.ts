@@ -1,5 +1,6 @@
 import { CUTOUT_MAX_BYTES } from 'shared/config/constants'
 import { createLogger } from 'shared/lib/log'
+import { writeTextNodes } from 'shared/lib/dom'
 import type { AnchorBox, Band, Cutout } from 'shared/model/layer'
 import { backgroundBehind, parseRgba, toCss } from './color'
 
@@ -102,6 +103,20 @@ export interface CutoutInput {
    * Не передано — кадр показывает то, что в элементе сейчас.
    */
   replaceContent?: Node
+  /**
+   * То же самое, но СТРОКОЙ, для правки кнопки или ссылки.
+   *
+   * У неё «было» — это текст, а не разметка: значок внутри кнопки правкой
+   * не затрагивается вовсе и обязан уцелеть в клоне. `replaceContent`
+   * принимает узел и годится только для замены содержимого ЦЕЛИКОМ, поэтому
+   * текстовой подмене нужен свой вход.
+   *
+   * ⚠ ЗАДАН РОВНО ОДИН из двух. Их соотношение — контракт, а не деталь:
+   * функция, принимающая оба и делающая с ними разное, — это класс ошибок,
+   * названный патчем 2026-09-06-21.55 поимённо. Заданы оба — вырезка
+   * не собирается вовсе, с предупреждением в журнал.
+   */
+  replaceText?: string
 }
 
 /**
@@ -527,16 +542,29 @@ export function buildCutout({
   frame,
   bandPad,
   replaceContent,
+  replaceText,
 }: CutoutInput): Cutout | null {
   const startedAt = performance.now()
   const frameBox = frame.getBoundingClientRect()
+
+  const подменяем = replaceContent !== undefined || replaceText !== undefined
+
+  // Соотношение двух входов — контракт. Молча предпочесть один другому значило
+  // бы прятать ошибку вызывающего в картинке, которую потом никто не сверит.
+  if (replaceContent !== undefined && replaceText !== undefined) {
+    log.warn('заданы оба входа подмены, вырезка не снята', {
+      тег: frame.tagName.toLowerCase(),
+    })
+    return null
+  }
 
   log.debug('съёмка вырезки', {
     тег: frame.tagName.toLowerCase(),
     ширина: Math.round(frameBox.width),
     высота: Math.round(frameBox.height),
     узлов: frame.querySelectorAll('*').length + 1,
-    подмена: replaceContent !== undefined,
+    подмена: подменяем,
+    путь: replaceText !== undefined ? 'текст' : 'разметка',
   })
 
   // Вырожденный кадр — скрытый элемент: свёрнутый аккордеон, неактивная
@@ -550,7 +578,7 @@ export function buildCutout({
   // Путь снимается с живого дерева ДО клонирования и до чистки: клон
   // отсоединён, а чистка снимет с узлов классы, по которым его было бы
   // искать. Разбор — в шапке `pathToAnchor`.
-  const anchorPath = replaceContent === undefined ? null : pathToAnchor(frame, anchor)
+  const anchorPath = подменяем ? pathToAnchor(frame, anchor) : null
 
   const clone = frame.cloneNode(true)
   if (!(clone instanceof Element)) return null
@@ -574,14 +602,19 @@ export function buildCutout({
   // «было», и это расхождение с подписью под ней; но стереть содержимое кадра
   // значило бы потерять и место, и текст разом, а место — единственное, чего
   // нет в строках «Было/Стало».
-  if (replaceContent !== undefined) {
+  if (подменяем) {
     const target = anchorPath === null ? null : nodeByPath(clone, anchorPath)
 
     if (target === null) {
       log.warn('место правки в кадре не найдено, показано текущее содержимое', {
         тег: frame.tagName.toLowerCase(),
       })
-    } else {
+    } else if (replaceText !== undefined) {
+      // Текстовая подмена: строка ложится в текстовые узлы двойника, а значок
+      // и прочие дети-элементы не трогаются вовсе — на картинке места правки
+      // кнопка обязана остаться кнопкой со значком.
+      writeTextNodes(target, replaceText)
+    } else if (replaceContent !== undefined) {
       target.replaceChildren(replaceContent)
     }
   }

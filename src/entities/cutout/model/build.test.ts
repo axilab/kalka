@@ -323,6 +323,73 @@ describe('buildCutout', () => {
     expect(html).toContain('Соседний абзац')
   })
 
+  it('текстовая подмена меняет строку и НЕ трогает значок', () => {
+    /*
+     * Правка кнопки: «было» это строка, а не разметка. Значок правкой
+     * не затрагивается вовсе и обязан уцелеть в клоне — иначе на картинке
+     * места правки кнопка перестала бы быть кнопкой со значком.
+     */
+    const el = put('<button><svg id="значок"></svg>Купить сейчас</button>')
+
+    const html = buildCutout({ anchor: el, frame: el, bandPad: 0, replaceText: 'Оформить заказ' })?.html ?? ''
+
+    expect(html).toContain('Оформить заказ')
+    expect(html).not.toContain('Купить сейчас')
+    // Проверяется не только подставленное, но и УЦЕЛЕВШЕЕ: правило
+    // профилактики патча 2026-09-06-21.55.
+    expect(html).toContain('<svg')
+  })
+
+  it('текстовая подмена идёт в ЯКОРЬ, а соседи по секции целы', () => {
+    // Невырожденная пара к случаю выше: кадр НЕ равен якорю — так оно и бывает
+    // в жизни, кадр берётся во всю ширину страницы.
+    host.innerHTML =
+      '<section><header><button><svg id="значок"></svg>Купить сейчас</button></header>' +
+      '<p>Соседний абзац</p></section>'
+    const frame = sized(host.firstElementChild as Element, { x: 0, y: 0, w: 1200, h: 400 })
+    const anchor = sized(host.querySelector('button') as Element, { x: 40, y: 20, w: 300, h: 40 })
+
+    const html = buildCutout({ anchor, frame, bandPad: 0, replaceText: 'Оформить заказ' })?.html ?? ''
+
+    expect(html).toContain('Оформить заказ')
+    expect(html).not.toContain('Купить сейчас')
+    expect(html).toContain('<svg')
+    // Окружение места правки уцелело: без него картинка не отвечает на вопрос
+    // «где это на странице».
+    expect(html).toContain('Соседний абзац')
+  })
+
+  it('заданы ОБА входа подмены — вырезка не снимается вовсе', () => {
+    /*
+     * Их соотношение — контракт, а не деталь. Молча предпочесть один другому
+     * значило бы спрятать ошибку вызывающего в картинке, которую потом никто
+     * не сверит: патч 2026-09-06-21.55 называет этот класс ошибок поимённо.
+     */
+    const el = put('<button>Купить сейчас</button>')
+    const replaceContent = document.createDocumentFragment()
+    replaceContent.append(document.createTextNode('Было так'))
+
+    const cutout = buildCutout({
+      anchor: el,
+      frame: el,
+      bandPad: 0,
+      replaceContent,
+      replaceText: 'Оформить заказ',
+    })
+
+    expect(cutout).toBeNull()
+  })
+
+  it('при текстовой подмене живой элемент НЕ меняется', () => {
+    const el = put('<button><svg></svg>Купить сейчас</button>')
+
+    buildCutout({ anchor: el, frame: el, bandPad: 0, replaceText: 'Оформить заказ' })
+
+    // Подмена идёт в отсоединённом клоне: печать отчёта не имеет права
+    // переписать чужую страницу на глазах у рецензента.
+    expect(el.textContent).toBe('Купить сейчас')
+  })
+
   it('живой элемент при подмене НЕ меняется', () => {
     // Прямая проверка того, что страница носителя не трогается вовсе: подмена
     // идёт в отсоединённом клоне. Ошибись здесь — и печать отчёта переписала бы
