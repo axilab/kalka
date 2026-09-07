@@ -350,14 +350,48 @@
 
       // Виджет поднимается на DOMContentLoaded, а модуль-фикстуры выполняется
       // раньше него: ждём готовности API, а не угадываем момент.
-      function seedWhenReady() {
-        if (window.__kalka && window.__kalka.seed) {
-          window.__kalka.seed(ENTRIES)
+      //
+      // ⚠ Появления `window.__kalka.seed` МАЛО, и это проверено на этом самом
+      // стенде, а не выведено из чтения кода. Поле выставляется при
+      // монтировании, движок наложения подписывается тогда же, а слой меток —
+      // своим `useEffect`, то есть позже. Подай записи в этот промежуток —
+      // и правки в тексте применятся, счётчики на палитре сойдутся, а меток
+      // не будет НИ ОДНОЙ до первого постороннего уведомления хранилища.
+      // Выглядит как «метки сломались», а сломан порядок на стенде.
+      //
+      // Отсчитывать кадры бесполезно — ни двух, ни `load` плюс кадр не хватило.
+      // Момент, когда интерфейс подписался, стенду не виден вовсе, поэтому
+      // подача не угадывает его, а ПРОВЕРЯЕТ РЕЗУЛЬТАТ: повторяет `seed`, пока
+      // метки не появятся. `seed` заменяет набор целиком и уведомляет
+      // подписчиков — повтор идемпотентен и безвреден.
+      //
+      // Ловушка общая для всех стендов с фикстурами; здесь она просто заметнее,
+      // потому что этот стенд про метки и есть.
+      const MARKS_EXPECTED = ENTRIES.length
+
+      function marksDrawn() {
+        const host = [...document.body.children].find((el) => el.shadowRoot)
+        const root = host && host.shadowRoot
+        return root ? root.querySelectorAll('.kalka-mark').length : 0
+      }
+
+      function seedUntilDrawn(attemptsLeft) {
+        if (!window.__kalka || !window.__kalka.seed) {
+          requestAnimationFrame(() => seedUntilDrawn(attemptsLeft))
           return
         }
-        requestAnimationFrame(seedWhenReady)
+
+        window.__kalka.seed(ENTRIES)
+
+        // Ноль меток — законное состояние вида «оригинал», но стенд стартует
+        // «с правками»: пока их меньше, чем подано, интерфейс подачи не увидел.
+        requestAnimationFrame(() => {
+          if (marksDrawn() >= MARKS_EXPECTED || attemptsLeft <= 0) return
+          setTimeout(() => seedUntilDrawn(attemptsLeft - 1), 50)
+        })
       }
-      seedWhenReady()
+
+      seedUntilDrawn(40)
     </script>
   </body>
 </html>
