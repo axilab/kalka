@@ -204,9 +204,13 @@ function rowOf(input: ReportInput, entry: Entry): string {
   const line = lineOf(entry, input.doc)
 
   const icon = line.tool === null ? '' : iconUp(line.tool)
-  // Вид и маршрут стоят одной строкой: это два ответа на один вопрос «что и где»,
-  // и разносить их значило бы занять две строки под четыре слова.
-  const head = [line.kind, line.route].filter((part) => part !== '').join(' · ')
+  // Вид, маршрут и дорожка стоят ОДНОЙ строкой: это три ответа на один вопрос
+  // «что и где», и разносить их значило бы занять три строки под шесть слов.
+  //
+  // Дорожка приходит только у замечания и встаёт ровно на место, освободившееся
+  // от его «было» (см. шапку `line.ts`). Пустые части отсеиваются здесь же,
+  // поэтому запись без дорожки не получает висящего разделителя.
+  const head = [line.kind, line.route, line.trail].filter((part) => part !== '').join(' · ')
 
   const parts = [
     head === '' ? '' : `<p class="edit__head">${escapeHtml(head)}</p>`,
@@ -427,11 +431,20 @@ export function buildReport(input: ReportInput): string {
     указатель: tools.filter((tool) => tool === 'point').length,
   }
 
+  // Замечания без дорожки считаются отдельно: у записи, снятой до вехи
+  // «Машиночитаемость», `path` приходит пустым, и место в описи не называет
+  // ничто. Счёт ловит именно этот случай — «дорожки нет ни у кого», — и в лог
+  // уходит ЧИСЛО, а не сама дорожка: она содержимое чужой страницы (NFR-03).
+  const withoutTrail = entries.filter(
+    (entry) => entry.type === 'comment' && entry.path === '',
+  ).length
+
   log.debug('сборка отчёта', {
     записей: entries.length,
     ...byTool,
     сКартинкой: withShot,
     безКартинки: entries.length - withShot,
+    безДорожки: withoutTrail,
   })
 
   // Шрифтовые правила собираются со ВСЕХ вырезок и объявляются один раз:

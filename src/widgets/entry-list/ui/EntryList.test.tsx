@@ -266,3 +266,124 @@ describe('EntryList: отчёт о загрузке', () => {
     expect(отчёт()).toContain('Не удалось прочитать файл')
   })
 })
+
+/*
+ * Дорожка в списке разбора: место замечания словами.
+ *
+ * У замечания «было» — это текст элемента-якоря целиком, обычно весь обведённый
+ * блок. В строке он читался простынёй, да ещё и перечёркнутой, будто этот текст
+ * удаляют. Место замечания называет дорожка (`path`), и появляется она ТОЛЬКО
+ * там, где ткнуть некуда: у записи с рабочим переходом она повторяла бы один
+ * клик и тратила бы высоту списка.
+ *
+ * Проверяется здесь не только то, что у замечания появилось, но и то, что
+ * УЦЕЛЕЛО у правки текста: правило идёт по типу записи, и промахнуться значило
+ * бы забрать «было» у той записи, которой оно нужно для ручного поиска (FR-31).
+ */
+describe('EntryList: дорожка у замечания', () => {
+  const TRAIL = 'Продукция → карточка 2 → заголовок'
+
+  function commentOf(id: string, over: Partial<Entry> = {}): Entry {
+    return {
+      ...entryOf(id, 'Весь текст обведённого блока'),
+      type: 'comment',
+      tag: 'section',
+      wasHtml: '',
+      now: 'Этот блок убрать',
+      path: TRAIL,
+      rect: { x: 0.1, y: 0.1, w: 0.5, h: 0.3 },
+      ...over,
+    }
+  }
+
+  /*
+   * Перерисовывает список на своём наборе записей.
+   *
+   * Микрозадача обязательна и таймером не заменяется: хранилище уведомляет
+   * подписчика синхронно, а Preact ставит перерисовку в микрозадачу. Без
+   * ожидания проверка смотрела бы на список, отрисованный по ПРЕЖНЕМУ набору,
+   * и «дорожки нет» проходило бы просто потому, что нет и самой записи.
+   */
+  async function показать(entries: Entry[]): Promise<void> {
+    entryStore.seed(entries)
+    await Promise.resolve()
+    flushEffects()
+    await Promise.resolve()
+  }
+
+  /** Ставит статус места и ждёт перерисовку — по той же причине. */
+  async function статус(id: string, status: 'drifted' | 'lost'): Promise<void> {
+    entryStore.setStatus(id, status)
+    await Promise.resolve()
+    flushEffects()
+    await Promise.resolve()
+  }
+
+  /** Подписи кнопок в плашке действий одной строкой. */
+  function действия(): string {
+    return [...container.querySelectorAll('.kalka-entry__actions button')]
+      .map((button) => button.getAttribute('aria-label') ?? button.textContent ?? '')
+      .join(' ')
+  }
+
+  function дорожки(): string[] {
+    return [...container.querySelectorAll('.kalka-entry__trail')].map(
+      (node) => node.textContent ?? '',
+    )
+  }
+
+  it('у замечания с рабочим переходом дорожки НЕТ', async () => {
+    await показать([commentOf('c')])
+
+    expect(дорожки()).toEqual([])
+    // И перечёркнутой простыни тоже нет — «было» у замечания пусто.
+    expect(container.querySelector('.kalka-entry__was')).toBeNull()
+    expect(container.textContent).not.toContain('Весь текст обведённого блока')
+  })
+
+  it('у замечания с уехавшим местом дорожка ЕСТЬ', async () => {
+    await показать([commentOf('c')])
+    await статус('c', 'drifted')
+
+    expect(дорожки()).toEqual([TRAIL])
+  })
+
+  it('у замечания с потерянным местом дорожка ЕСТЬ', async () => {
+    await показать([commentOf('c')])
+    await статус('c', 'lost')
+
+    expect(дорожки()).toEqual([TRAIL])
+  })
+
+  it('у замечания с другого маршрута дорожка ЕСТЬ', async () => {
+    await показать([commentOf('c', { route: '/другая-страница' })])
+
+    expect(дорожки()).toEqual([TRAIL])
+  })
+
+  it('пустая дорожка не подменяется текстом якоря', async () => {
+    // Запись из файла, снятого до вехи «Машиночитаемость»: `path` пуст.
+    await показать([commentOf('c', { path: '' })])
+    await статус('c', 'lost')
+
+    expect(дорожки()).toEqual([])
+    expect(container.textContent).not.toContain('Весь текст обведённого блока')
+  })
+
+  it('кнопки «Копировать „было“» у замечания нет ни при каком состоянии места', async () => {
+    await показать([commentOf('c')])
+    for (const status of ['drifted', 'lost'] as const) {
+      await статус('c', status)
+      expect(действия()).not.toContain('было')
+    }
+  })
+
+  it('у правки текста с уехавшим местом «было» и кнопка копирования УЦЕЛЕЛИ', async () => {
+    await показать([entryOf('t', 'Первая')])
+    await статус('t', 'drifted')
+
+    expect(container.querySelector('.kalka-entry__was')?.textContent).toBe('Первая')
+    expect(дорожки()).toEqual([])
+    expect(действия()).toContain('было')
+  })
+})
