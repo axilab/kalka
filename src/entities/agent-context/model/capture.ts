@@ -73,6 +73,46 @@ const ROLE_BY_TAG: Record<string, string> = {
   TH: 'ячейка',
   FIGCAPTION: 'подпись',
   SUMMARY: 'заголовок блока',
+  LABEL: 'подпись поля',
+}
+
+/**
+ * Второй словарь — по АТРИБУТУ `role`.
+ *
+ * `<div role="button">` на живых страницах встречается не реже настоящей
+ * кнопки, а по тегу такое звено метки не получало вовсе и в путь не попадало.
+ * Приём взят из `identifyElement` репозитория agentation, но словарь остаётся
+ * РУССКИМ и без технических терминов (FR-36), а правило «звено без метки в путь
+ * не попадает» не ослабляется: неизвестное значение атрибута падает на тег.
+ *
+ * ⚠ Правила отбора при этом не меняются НИ В ОДНОМ месте: `href`, `src`,
+ * `data-*`, `<meta>` и содержимое `script`/`style` этот файл не читает и читать
+ * не начинает (FR-46). `role` — не адрес и не команда: это назначение элемента,
+ * написанное для программ чтения с экрана, и читать его правилу не противоречит.
+ */
+const ROLE_BY_ATTRIBUTE: Record<string, string> = {
+  tab: 'вкладка',
+  menuitem: 'пункт меню',
+  button: 'кнопка',
+  link: 'ссылка',
+}
+
+/**
+ * Метка звена по назначению элемента. Атрибут `role` СТАРШЕ тега.
+ *
+ * Порядок обязателен и не переставляется. `ROLE_BY_TAG` знает `BUTTON`,
+ * и при проверке тега первым `<button role="tab">` навсегда остался бы
+ * «кнопкой», хотя вкладка здесь точнее. Неизвестное или отсутствующее значение
+ * атрибута падает на тег, поэтому `<button>` и `<li role="presentation">` дают
+ * прежние метки, а `<div role="button">` — «кнопку».
+ *
+ * Решение живёт в ОДНОМ месте: его спрашивают и построение пути, и журнал.
+ */
+function roleLabel(el: Element): { label: string; byAttribute: boolean } {
+  const attribute = el.getAttribute('role')
+  const byRole = attribute === null ? undefined : ROLE_BY_ATTRIBUTE[attribute]
+  if (byRole !== undefined) return { label: byRole, byAttribute: true }
+  return { label: ROLE_BY_TAG[el.tagName] ?? '', byAttribute: false }
 }
 
 function isHeading(el: Element): boolean {
@@ -189,7 +229,9 @@ export function describeForHuman(el: Element): string {
   const title = normalize(el.getAttribute('title') ?? '')
   if (title) return title
 
-  const role = ROLE_BY_TAG[el.tagName]
+  // Место вставки — ПОСЛЕ `aria-label` и `title`: те остаются старше обоих
+  // словарей, и их порядок эта веха не трогает.
+  const { label: role } = roleLabel(el)
   if (!role) return ''
 
   const ordinal = siblingOrdinal(el)
@@ -261,6 +303,8 @@ export function captureAgentContext(
     тег: el.tagName.toLowerCase(),
     звеньевПути: path ? path.split(PATH_SEPARATOR).length : 0,
     длинаПути: path.length,
+    // Новое звено словаря: метка пришла от атрибута `role`, а не от тега.
+    меткаПоРоли: roleLabel(el).byAttribute,
     естьЗаголовок: Boolean(nearestHeading),
     знаковДо: context.contextBefore.length,
     знаковПосле: context.contextAfter.length,
