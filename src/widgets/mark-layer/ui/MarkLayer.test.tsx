@@ -1,6 +1,8 @@
 import { h, render } from 'preact'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { entryStore } from 'entities/entry'
+import type { Entry } from 'shared/model/format'
 import { ROOT_ATTRIBUTE } from 'shared/config/constants'
 import { MarkLayer, textBox } from './MarkLayer'
 
@@ -33,12 +35,31 @@ function layOut(el: Element, boxes: DOMRect[], bounding: DOMRect): void {
 
 let host: HTMLDivElement
 
+/*
+ * Вид страницы и набор записей сбрасываются на уровне ФАЙЛА, а не блока.
+ *
+ * `entryStore` — модульный синглтон, а проверки видимости ниже переключают вид
+ * в обе стороны и заполняют набор. `beforeEach` блока «окно замечания» ни того,
+ * ни другого не трогает: утёкшее `showOriginal === true` оставило бы его без
+ * меток на пустом месте. Повторяется на выходе — образец в проекте именно
+ * такой (`app/lib/overlay/engine.test.ts`).
+ */
+function resetStore(): void {
+  entryStore.setShowOriginal(false)
+  entryStore.seed([])
+  entryStore.setRoute('')
+}
+
 beforeEach(() => {
+  resetStore()
   host = document.createElement('div')
   document.body.append(host)
 })
 
-afterEach(() => host.remove())
+afterEach(() => {
+  host.remove()
+  resetStore()
+})
 
 describe('textBox', () => {
   it('у цели с одним прямоугольником рамка совпадает с нынешней дословно', () => {
@@ -185,5 +206,174 @@ describe('окно замечания', () => {
     await flush()
 
     expect(окно()).toBeNull()
+  })
+})
+
+/*
+ * Правило видимости меток: одно на все три инструмента.
+ *
+ * До вехи «вид страницы в два состояния» эта ветка не была покрыта ни одним
+ * тестом. Проверялись чистая функция `textBox`, компонент `Marker` с готовыми
+ * пропсами и поведение окна замечания — но не ОТБОР записей. Сними фильтр
+ * молча — и сборка осталась бы зелёной при изменившемся поведении.
+ *
+ * jsdom не раскладывает страницу: `getBoundingClientRect` подставляется, как
+ * и в проверках геометрии выше. Здесь важно не место метки, а то, сколько
+ * их построено.
+ */
+describe('видимость меток', () => {
+  let container: HTMLDivElement
+  /** Маршрут текущей страницы: записи чужого маршрута слой не рисует. */
+  const ROUTE = `${location.pathname}${location.hash}`
+
+  /** Идентификатор записи → текст её якоря на странице. */
+  const ЯКОРЯ: Readonly<Record<string, string>> = {
+    правка1: 'Тариф «Домашний»',
+    правка2: 'Подключить за час',
+    оформление: 'Скидка 20%',
+    область: 'Блок отзывов',
+    место: 'Кнопка внизу',
+  }
+
+  function entryOf(over: Partial<Entry> & Pick<Entry, 'id' | 'type' | 'was'>): Entry {
+    return {
+      route: ROUTE,
+      path: 'main > el',
+      tag: 'p',
+      now: over.was,
+      style: {},
+      nearestHeading: '',
+      contextBefore: '',
+      contextAfter: '',
+      occurrencesOnPage: 1,
+      anchor: { selector: `#${over.id}`, xpath: '', snippet: over.was, index: 0 },
+      viewport: { w: 1440, h: 900 },
+      at: '2026-09-07T10:00:00.000Z',
+      ...over,
+    } as Entry
+  }
+
+  /**
+   * Набор из всех четырёх видов записей, какими их даёт палитра.
+   *
+   * Правок текста ДВЕ, а не одна: единственное, что веха изменила
+   * в поведении, — подчёркивания правок текста видны теперь всегда, и на одной
+   * записи эта разница не читается. Вырожденный случай обязан иметь рядом
+   * невырожденный (`.ai-factory/patches/2026-09-06-21.55.md`).
+   */
+  function seedAll(): void {
+    entryStore.seed([
+      entryOf({ id: 'правка1', type: 'text-override', was: 'Тариф «Домашний»' }),
+      entryOf({ id: 'правка2', type: 'text-override', was: 'Подключить за час' }),
+      entryOf({
+        id: 'оформление',
+        type: 'style-wish',
+        was: 'Скидка 20%',
+        style: { fontSize: '24px' },
+      }),
+      entryOf({
+        id: 'область',
+        type: 'comment',
+        was: 'Блок отзывов',
+        now: 'убрать целиком',
+        rect: { x: 0.1, y: 0.1, w: 0.5, h: 0.3 },
+      }),
+      entryOf({
+        id: 'место',
+        type: 'comment',
+        was: 'Кнопка внизу',
+        now: 'не видно',
+        point: { x: 0.5, y: 0.5 },
+      }),
+    ])
+  }
+
+  beforeEach(() => {
+    /*
+     * Якоря записей на странице.
+     *
+     * Текст элемента обязан СОВПАДАТЬ с `was` записи: первая ступень разбора
+     * якоря сверяет найденное по селектору с исходным текстом и без совпадения
+     * уходит дальше, а дальше здесь ничего нет. Иначе все пять записей
+     * оказались бы «потерянными местами», и проверка видимости прошла бы
+     * мимо своего предмета.
+     */
+    for (const [id, was] of Object.entries(ЯКОРЯ)) {
+      const el = document.createElement('div')
+      el.id = id
+      el.textContent = was
+      el.getBoundingClientRect = () => rect(0, 0, 800, 600)
+      host.append(el)
+    }
+
+    entryStore.setRoute(ROUTE)
+    container = document.createElement('div')
+    container.setAttribute(ROOT_ATTRIBUTE, '')
+    document.body.append(container)
+  })
+
+  afterEach(() => {
+    render(null, container)
+    container.remove()
+  })
+
+  async function flush(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 30))
+  }
+
+  function marks(): Element[] {
+    return [...container.querySelectorAll('.kalka-mark')]
+  }
+
+  it('в виде «с правками» метку получают все записи, включая правки текста', async () => {
+    seedAll()
+    render(h(MarkLayer, { tool: null }), container)
+    await flush()
+
+    expect(marks()).toHaveLength(5)
+    // Именно этого не было до вехи: подчёркивания правок текста подчинялись
+    // отдельному тумблеру, а рамка и точка были видны всегда.
+    expect(container.querySelectorAll('.kalka-mark--text')).toHaveLength(3)
+    expect(container.querySelectorAll('.kalka-mark--area')).toHaveLength(1)
+    expect(container.querySelectorAll('.kalka-mark--point')).toHaveLength(1)
+  })
+
+  it('в виде «оригинал» не рисуется ни одной метки', async () => {
+    seedAll()
+    render(h(MarkLayer, { tool: null }), container)
+    await flush()
+    expect(marks()).toHaveLength(5)
+
+    entryStore.setShowOriginal(true)
+    await flush()
+
+    // Правило одно на все три инструмента: страница без следов «Кальки».
+    expect(marks()).toHaveLength(0)
+  })
+
+  it('запись чужого маршрута не рисуется ни в каком виде', async () => {
+    // Невырожденная пара к первому случаю: правило маршрута веха не трогает,
+    // и оно обязано уцелеть рядом со снятым отбором по типу записи.
+    seedAll()
+    entryStore.seed([
+      ...entryStore.list(),
+      entryOf({
+        id: 'чужая',
+        type: 'text-override',
+        was: 'Тариф «Домашний»',
+        // Якорь тот же, что у своей записи: место на странице находится, и
+        // не рисуется она ИМЕННО из-за маршрута, а не из-за потерянного места.
+        anchor: { selector: '#правка1', xpath: '', snippet: 'Тариф «Домашний»', index: 0 },
+        route: '/другая-страница',
+      }),
+    ])
+    render(h(MarkLayer, { tool: null }), container)
+    await flush()
+
+    expect(marks()).toHaveLength(5)
+
+    entryStore.setShowOriginal(true)
+    await flush()
+    expect(marks()).toHaveLength(0)
   })
 })
