@@ -10,6 +10,7 @@ import type { Tool } from 'shared/model/ui'
 import { APPLIED_ATTRIBUTE } from 'shared/config/constants'
 import { logPlacement, placeCallout } from 'shared/lib/callout'
 import { restorePoint, restoreRect, watchLayout } from 'shared/lib/geometry'
+import { watchEscape } from 'shared/lib/dom'
 import { createLogger } from 'shared/lib/log'
 import { CommentEditor } from './CommentEditor'
 import { Marker } from './Marker'
@@ -223,8 +224,20 @@ export interface MarkLayerProps {
 
 export function MarkLayer({ tool, reservedRight }: MarkLayerProps): JSX.Element {
   const version = useStoreVersion()
-  const area = useDrawArea(tool === 'area')
-  const point = usePlacePoint(tool === 'point')
+
+  /*
+   * В виде «оригинал» инструменты не работают вовсе.
+   *
+   * `CONTEXT.md` про этот вид говорит прямо: «текст носителя, ни одной метки,
+   * править нельзя». Прежде запрет исполнялся наполовину — метки не рисовались,
+   * а перехват страницы жил, и рамку в «оригинале» можно было обвести, получив
+   * невидимую правку. Признак стоит ЗДЕСЬ, у самого включения инструмента,
+   * чтобы перехвата не было ни одного кадра; рейка снимает выбранный инструмент
+   * и гасит палитру своими средствами (`app/ui/Root`).
+   */
+  const original = entryStore.showOriginal()
+  const area = useDrawArea(tool === 'area' && !original)
+  const point = usePlacePoint(tool === 'point' && !original)
 
   /** Сохранённая запись, по метке которой кликнули (FR-15). */
   const [picked, setPicked] = useState<Entry | null>(null)
@@ -503,6 +516,19 @@ export function MarkLayer({ tool, reservedRight }: MarkLayerProps): JSX.Element 
     area.cancel()
     point.cancel()
   }
+
+  /*
+   * Escape закрывает окно замечания — привычка из любого диалога.
+   *
+   * Ловится на странице носителя (`watchEscape`), а не в самом окне: после
+   * проглоченного нажатия по странице фокус остаётся там, где был, и обработчик
+   * на корне окна события бы не увидел. Заодно Escape не уходит в носителя —
+   * чужая страница вправе закрыть им своё модальное окно за компанию.
+   */
+  useEffect(() => {
+    if (!editing) return
+    return watchEscape(close)
+  }, [editing?.id])
 
   function save(comment: string): void {
     if (!editing) return

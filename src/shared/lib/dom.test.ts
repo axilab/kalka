@@ -7,7 +7,11 @@ import {
   onDocumentReady,
   pickTarget,
   scrollToElement,
+  setPageCursor,
   usesTextPath,
+  watchAreaDrawing,
+  watchEscape,
+  watchPointPicking,
   writeTextNodes,
 } from './dom'
 import { normalize } from './normalize'
@@ -549,5 +553,168 @@ describe('freezeMotion', () => {
     // Правило в `<style>` уже стоит, и ронять из-за экзотического носителя
     // всю съёмку незачем.
     expect(() => freezeMotion(document)()).not.toThrow()
+  })
+})
+
+/*
+ * Курсор режима и пауза инструментов.
+ *
+ * jsdom вычисленных курсоров не считает, поэтому проверяется ТЕКСТ правила
+ * и наличие своего `<style>` — тот же приём, что у заморозки выше и у проверки
+ * стилей в `app/lib/mount.test.ts`. Вид курсора глазами сверяется на стенде
+ * `dev/marks.html`: автотест на «крест выглядит крестом» невозможен в принципе.
+ */
+describe('setPageCursor', () => {
+  const найти = (): HTMLStyleElement | null =>
+    document.head.querySelector('style[data-kalka-cursor-style]')
+
+  afterEach(() => {
+    найти()?.remove()
+  })
+
+  it('правило встаёт в <head> носителя', () => {
+    setPageCursor('crosshair')
+
+    expect(найти()?.textContent).toContain('cursor:crosshair!important')
+  })
+
+  it('собственный интерфейс из-под правила выведен', () => {
+    setPageCursor('crosshair')
+
+    // Без выреза крест протёк бы в теневой корень: `cursor` наследуется,
+    // и ящик с полями получил бы его вместе со страницей.
+    expect(найти()?.textContent).toContain(':not([data-kalka-root])')
+    expect(найти()?.textContent).toContain(':not([data-kalka-root] *)')
+  })
+
+  it('смена вида переписывает правило, а не плодит второй <style>', () => {
+    setPageCursor('crosshair')
+    setPageCursor('default')
+
+    // Вид меняется на каждое открытие и закрытие окна замечания: копить
+    // элементы в чужом `<head>` на каждой такой смене нельзя.
+    expect(document.head.querySelectorAll('style[data-kalka-cursor-style]')).toHaveLength(1)
+    expect(найти()?.textContent).toContain('cursor:default!important')
+  })
+
+  it('после снятия своего <style> в <head> не остаётся', () => {
+    setPageCursor('crosshair')()
+
+    expect(найти()).toBeNull()
+  })
+})
+
+describe('пауза инструментов', () => {
+  /** Нажатие указателем по странице носителя. */
+  function нажать(type: string): MouseEvent {
+    const event = new MouseEvent(type, {
+      bubbles: true,
+      composed: true,
+      cancelable: true,
+      clientX: 10,
+      clientY: 10,
+    })
+    document.body.dispatchEvent(event)
+    return event
+  }
+
+  it('на паузе нажатие ПРОГЛАТЫВАЕТСЯ, но рамка не начинается', () => {
+    const onDrawn = vi.fn()
+    const onPreview = vi.fn()
+    const stop = watchAreaDrawing(onDrawn, onPreview, () => true)
+
+    const event = нажать('pointerdown')
+
+    // Гашение обязано остаться: снять его значило бы оживить ссылки носителя
+    // ровно тогда, когда рецензент печатает замечание рядом с ними.
+    expect(event.defaultPrevented).toBe(true)
+    expect(onPreview).not.toHaveBeenCalled()
+    expect(onDrawn).not.toHaveBeenCalled()
+
+    stop()
+  })
+
+  it('без паузы нажатие начинает рамку', () => {
+    const onPreview = vi.fn()
+    const stop = watchAreaDrawing(vi.fn(), onPreview, () => false)
+
+    нажать('pointerdown')
+
+    expect(onPreview).toHaveBeenCalled()
+
+    stop()
+  })
+
+  it('на паузе клик проглатывается, но указатель не ставится', () => {
+    const onPicked = vi.fn()
+    const stop = watchPointPicking(onPicked, () => true)
+
+    const event = нажать('click')
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(onPicked).not.toHaveBeenCalled()
+
+    stop()
+  })
+
+  it('без паузы клик ставит указатель', () => {
+    const onPicked = vi.fn()
+    const stop = watchPointPicking(onPicked, () => false)
+
+    нажать('click')
+
+    expect(onPicked).toHaveBeenCalledWith(10, 10)
+
+    stop()
+  })
+})
+
+describe('watchEscape', () => {
+  function escape(): KeyboardEvent {
+    const event = new KeyboardEvent('keydown', {
+      key: 'Escape',
+      bubbles: true,
+      composed: true,
+      cancelable: true,
+    })
+    document.body.dispatchEvent(event)
+    return event
+  }
+
+  it('Escape зовёт закрытие и в носителя не уходит', () => {
+    const onEscape = vi.fn()
+    const stop = watchEscape(onEscape)
+
+    const event = escape()
+
+    expect(onEscape).toHaveBeenCalledTimes(1)
+    // Чужая страница вправе закрыть по Escape своё модальное окно: пустить
+    // событие дальше значило бы закрыть заодно и его.
+    expect(event.defaultPrevented).toBe(true)
+
+    stop()
+  })
+
+  it('прочие клавиши не трогаются', () => {
+    const onEscape = vi.fn()
+    const stop = watchEscape(onEscape)
+
+    const event = new KeyboardEvent('keydown', { key: 'a', bubbles: true, cancelable: true })
+    document.body.dispatchEvent(event)
+
+    expect(onEscape).not.toHaveBeenCalled()
+    expect(event.defaultPrevented).toBe(false)
+
+    stop()
+  })
+
+  it('после снятия Escape не перехватывается', () => {
+    const onEscape = vi.fn()
+    watchEscape(onEscape)()
+
+    const event = escape()
+
+    expect(onEscape).not.toHaveBeenCalled()
+    expect(event.defaultPrevented).toBe(false)
   })
 })

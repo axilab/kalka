@@ -1,6 +1,8 @@
+import { h, render } from 'preact'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { textBox } from './MarkLayer'
+import { ROOT_ATTRIBUTE } from 'shared/config/constants'
+import { MarkLayer, textBox } from './MarkLayer'
 
 /*
  * Геометрия метки у СТРОЧНОЙ цели.
@@ -81,5 +83,107 @@ describe('textBox', () => {
     // Тот же ответ, что и сегодня у нулевой рамки: метки нет, но запись цела
     // и потерянной не считается — якорь-то нашёлся.
     expect(textBox(цель)).toBeNull()
+  })
+})
+
+/*
+ * Проводка окна замечания: нажатие по странице и Escape.
+ *
+ * Проверяется НЕ механика перехвата — она разобрана в `shared/lib/dom.test.ts`, —
+ * а то, что слой её включил: предикат паузы передан режиму, `watchEscape`
+ * поднят вместе с окном. Обе поломки здесь — поломки проводки, и юнит-тесты
+ * механики их не видят вовсе.
+ *
+ * jsdom не раскладывает страницу: `elementFromPoint` и `getBoundingClientRect`
+ * подставляются, как и в проверках геометрии выше.
+ */
+describe('окно замечания', () => {
+  let container: HTMLDivElement
+  let target: HTMLDivElement
+  /** jsdom `elementFromPoint` не реализует вовсе — отсюда `undefined`. */
+  let elementFromPoint: typeof document.elementFromPoint | undefined
+
+  beforeEach(() => {
+    target = document.createElement('div')
+    target.textContent = 'Тариф «Домашний»'
+    target.getBoundingClientRect = () => rect(0, 0, 800, 600)
+    document.body.append(target)
+
+    elementFromPoint = document.elementFromPoint
+    document.elementFromPoint = () => target
+
+    container = document.createElement('div')
+    // Тот же атрибут, что у настоящего host-элемента: без него слой считал бы
+    // собственные узлы чужой страницей (см. разбор в `app/ui/Root.test.tsx`).
+    container.setAttribute(ROOT_ATTRIBUTE, '')
+    document.body.append(container)
+    render(h(MarkLayer, { tool: 'area' }), container)
+  })
+
+  afterEach(() => {
+    render(null, container)
+    container.remove()
+    target.remove()
+    document.elementFromPoint = elementFromPoint as typeof document.elementFromPoint
+  })
+
+  function pointer(type: string, x: number, y: number): MouseEvent {
+    const event = new MouseEvent(type, {
+      bubbles: true,
+      composed: true,
+      cancelable: true,
+      clientX: x,
+      clientY: y,
+    })
+    document.body.dispatchEvent(event)
+    return event
+  }
+
+  async function flush(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 30))
+  }
+
+  /** Обводит рамку на странице и дожидается окна замечания. */
+  async function draw(): Promise<void> {
+    await flush()
+    pointer('pointerdown', 10, 10)
+    pointer('pointerup', 300, 300)
+    await flush()
+  }
+
+  const окно = (): Element | null => container.querySelector('.kalka-comment')
+
+  it('рисование по странице не выбрасывает недописанное замечание', async () => {
+    await draw()
+
+    const поле = container.querySelector('textarea')
+    expect(поле).not.toBeNull()
+    if (!поле) return
+    поле.value = 'убрать этот блок'
+    поле.dispatchEvent(new Event('input', { bubbles: true }))
+    await flush()
+
+    // Вторая рамка ЦЕЛИКОМ, а не одно нажатие: прежде черновик подменялся
+    // на `pointerup`, и набранный текст исчезал молча.
+    const event = pointer('pointerdown', 400, 400)
+    pointer('pointerup', 700, 700)
+    await flush()
+
+    expect(окно()).not.toBeNull()
+    expect(container.querySelector('textarea')?.value).toBe('убрать этот блок')
+    // Гашение при этом обязано остаться: ссылки носителя не оживают.
+    expect(event.defaultPrevented).toBe(true)
+  })
+
+  it('Escape закрывает окно замечания', async () => {
+    await draw()
+    expect(окно()).not.toBeNull()
+
+    document.body.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true }),
+    )
+    await flush()
+
+    expect(окно()).toBeNull()
   })
 })

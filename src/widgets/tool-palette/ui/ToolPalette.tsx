@@ -28,6 +28,14 @@ const TOOLS: ReadonlyArray<{
 export interface ToolPaletteProps {
   selected: Tool | null
   onSelect: (tool: Tool) => void
+  /**
+   * Инструменты сейчас недоступны — вид «оригинал» (FR-21).
+   *
+   * Кнопки при этом ОСТАЮТСЯ на рейке: исчезающая палитра сообщала бы, что
+   * инструментов нет вовсе, тогда как они есть — просто в этом виде страницу
+   * не правят. Тот же довод, что у отключённого «Экспорта» при пустом наборе.
+   */
+  disabled?: boolean
 }
 
 /** Сколько правок сделано каждым инструментом. */
@@ -94,7 +102,7 @@ const HINTS: Readonly<Record<Tool, string>> = {
  * инструмент выбран, и ОБЪЯСНЯЕТ действие и способ выключить инструмент.
  * Соединять их нельзя: первая нужна до выбора, вторая — после.
  */
-export function ToolPalette({ selected, onSelect }: ToolPaletteProps): JSX.Element {
+export function ToolPalette({ selected, onSelect, disabled }: ToolPaletteProps): JSX.Element {
   /*
    * Счётчики берутся из хранилища ЗДЕСЬ, а не приходят пропом сверху.
    *
@@ -111,6 +119,9 @@ export function ToolPalette({ selected, onSelect }: ToolPaletteProps): JSX.Eleme
     return entryStore.subscribe(() => setCounts(countsByTool()))
   }, [])
 
+  // В «оригинале» выбранного инструмента не бывает: рейка снимает его сама
+  // (`app/ui/Root`). Отдельной проверки здесь поэтому нет — подсказке нечего
+  // показывать, когда `selected === null`.
   const chosen = TOOLS.find((tool) => tool.id === selected)
 
   return (
@@ -125,6 +136,7 @@ export function ToolPalette({ selected, onSelect }: ToolPaletteProps): JSX.Eleme
             tip={tool.label}
             selected={tool.id === selected}
             pressed={tool.id === selected}
+            disabled={disabled}
             onClick={() => onSelect(tool.id)}
           />
         ))}

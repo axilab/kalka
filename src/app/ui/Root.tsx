@@ -1,5 +1,5 @@
 import type { JSX } from 'preact'
-import { useRef, useState } from 'preact/hooks'
+import { useEffect, useRef, useState } from 'preact/hooks'
 import { ReviewMode } from 'pages/review-mode'
 import { ExportSummary } from 'widgets/export-summary'
 import { MarkLayer } from 'widgets/mark-layer'
@@ -112,6 +112,31 @@ export function Root(): JSX.Element {
     // ящик остаётся открытым, а инструмент продолжает работать на странице.
     if (mode !== 'review') go(chosen === null ? 'view' : 'edit')
   }
+
+  /*
+   * ── Вид «оригинал» снимает инструмент ────────────────────────────────────
+   *
+   * Словарь обещает про этот вид «править нельзя», и обещание исполняется
+   * в двух местах с разными работами: слой меток не включает перехват страницы
+   * вовсе (`widgets/mark-layer`), а рейка приводит в порядок ИНТЕРФЕЙС — снимает
+   * выбор и гасит палитру, чтобы нажимаемая кнопка не обещала работы, которой
+   * не будет (тот же довод, что у отключённого «Экспорта» в `app/ui/host.css`).
+   *
+   * Решение принимается здесь, в одном месте, — ровно как с тумблером FR-21
+   * и слоем меток ниже.
+   */
+  const [original, setOriginal] = useState(entryStore.showOriginal())
+  useEffect(() => {
+    setOriginal(entryStore.showOriginal())
+    return entryStore.subscribe(() => setOriginal(entryStore.showOriginal()))
+  }, [])
+
+  useEffect(() => {
+    if (!original || tool === null) return
+    log.debug('инструмент снят', { причина: 'оригинал', инструмент: tool })
+    setTool(null)
+    if (mode !== 'review') go('view')
+  }, [original, tool])
 
   // Вид страницы доступен во всех трёх режимах — это прямые требования FR-21
   // (оригинал / с правками) и FR-22 (где изменения). Решение принимается здесь,
@@ -279,7 +304,7 @@ export function Root(): JSX.Element {
    */
   const rail = (
     <div class="kalka-rail" ref={railRef}>
-      <ToolPalette selected={tool} onSelect={choose} />
+      <ToolPalette selected={tool} disabled={original} onSelect={choose} />
       {toggles}
 
       {/*
