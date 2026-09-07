@@ -122,13 +122,78 @@ function elementFor(entry: Entry): { element: Element; exact: boolean } | null {
  * честно возвращает `null` при нулевом bounding box. Метки при этом нет,
  * но запись цела и потерянной не считается — якорь-то нашёлся (решение 14).
  */
-function boxOf(mark: Mark): DOMRect | null {
-  if (!mark.element.isConnected) return null
-  if (mark.entry.rect) return restoreRect(mark.entry.rect, mark.element)
-  if (mark.entry.point) return restorePoint(mark.entry.point, mark.element)
+export interface MarkBox {
+  /** Прямоугольник, по которому встают место и размер узла метки. */
+  box: DOMRect
+  /**
+   * Сдвиг номера от левого нижнего угла `box`, в пикселях. Нули — номер стоит
+   * там же, где стоял всегда, и правило CSS работает без поправки.
+   */
+  numberX: number
+  numberY: number
+}
 
-  const box = mark.element.getBoundingClientRect()
-  return box.width === 0 && box.height === 0 ? null : box
+/**
+ * Геометрия правки текста. ЭКСПОРТИРУЕТСЯ РАДИ ТЕСТОВ: `getClientRects`
+ * в jsdom всегда пуст, и проверять ветку многострочной цели можно только
+ * подменой на чистой функции.
+ *
+ * ── Почему одного bounding box стало мало ───────────────────────────────────
+ *
+ * До вехи «правка текста в кнопках и ссылках» целью правки всегда был блочный
+ * элемент: `climbToOutermost` доводил подъём до абзаца, и «весь якорь целиком»
+ * означало ровно то, что видит человек. Граница правки впервые делает целью
+ * СТРОЧНЫЙ элемент, и у ссылки внутри абзаца, перенесённой по словам на две
+ * строки, объединённая рамка растягивается на всю ширину контейнера и на высоту
+ * обеих строк: корректорское подчёркивание легло бы поперёк абзаца, а номер
+ * встал бы не у правки.
+ *
+ * Поэтому у многострочной цели подчёркивание идёт по ПОСЛЕДНЕМУ прямоугольнику
+ * (там, где строка кончается, — так правку и помечают на распечатке), а номер
+ * сдвигается к ПЕРВОМУ (там, где она начинается).
+ *
+ * Ветка работает ТОЛЬКО при нескольких прямоугольниках. Один прямоугольник —
+ * это почти все правки в проекте, и поведение для них обязано остаться
+ * дословно прежним: меряется тот же `getBoundingClientRect()`, а не
+ * `getClientRects()[0]`, потому что у элемента с переполнением или
+ * трансформацией это не одно и то же.
+ */
+export function textBox(el: Element): MarkBox | null {
+  const rects = el.getClientRects()
+
+  // Ноль и один — прежний ответ, буква в букву. Ноль прямоугольников даёт
+  // нулевую рамку, то есть `null`: метки нет, запись цела и потерянной
+  // не считается (решение 14).
+  if (rects.length <= 1) {
+    const box = el.getBoundingClientRect()
+    return box.width === 0 && box.height === 0 ? null : { box, numberX: 0, numberY: 0 }
+  }
+
+  // Индексы заведомо в границах: длина проверена выше. `noUncheckedIndexedAccess`
+  // об этом не знает, поэтому утверждение явное.
+  const first = rects[0] as DOMRect
+  const last = rects[rects.length - 1] as DOMRect
+
+  return {
+    box: last,
+    numberX: first.left - last.left,
+    numberY: first.bottom - last.bottom,
+  }
+}
+
+function boxOf(mark: Mark): MarkBox | null {
+  if (!mark.element.isConnected) return null
+
+  if (mark.entry.rect) {
+    const box = restoreRect(mark.entry.rect, mark.element)
+    return box && { box, numberX: 0, numberY: 0 }
+  }
+  if (mark.entry.point) {
+    const box = restorePoint(mark.entry.point, mark.element)
+    return box && { box, numberX: 0, numberY: 0 }
+  }
+
+  return textBox(mark.element)
 }
 
 /** Перерисовка при любом изменении хранилища, включая смену маршрута. */
@@ -186,6 +251,8 @@ export function MarkLayer({ tool, reservedRight }: MarkLayerProps): JSX.Element 
   const frame = useRef<number | null>(null)
   /** Сколько меток скрыто вместе с якорем. Только чтобы не логировать каждый кадр. */
   const hiddenBefore = useRef(-1)
+  /** Сколько целей на прошлом кадре занимали больше одной строки: только для лога. */
+  const многострочныхBefore = useRef(-1)
 
   /*
    * Элементы разрешает сам слой, а не берёт готовые из хранилища.
@@ -301,18 +368,21 @@ export function MarkLayer({ tool, reservedRight }: MarkLayerProps): JSX.Element 
    */
   const layout = useCallback((): void => {
     let hidden = 0
+    let многострочных = 0
 
     for (const mark of marks) {
       const node = nodes.current.get(mark.entry.id)
       if (!node) continue
 
-      const box = boxOf(mark)
+      const placed = boxOf(mark)
 
-      if (!box) {
+      if (!placed) {
         hidden += 1
         node.style.display = 'none'
         continue
       }
+
+      const { box, numberX, numberY } = placed
 
       node.style.display = ''
       node.style.left = `${box.left}px`
@@ -323,6 +393,21 @@ export function MarkLayer({ tool, reservedRight }: MarkLayerProps): JSX.Element 
       if (!mark.entry.point) {
         node.style.width = `${box.width}px`
         node.style.height = `${box.height}px`
+      }
+
+      /*
+       * Поправка номера у многострочной цели: узел метки стоит на ПОСЛЕДНЕЙ
+       * строке, а номер обязан остаться у НАЧАЛА правки. Обе переменные
+       * снимаются, как только цель снова стала однострочной, — иначе поправка
+       * пережила бы переверстку окна и увела бы номер в пустоту.
+       */
+      if (numberX || numberY) {
+        многострочных += 1
+        node.style.setProperty('--kalka-mark-number-x', `${numberX}px`)
+        node.style.setProperty('--kalka-mark-number-y', `${numberY}px`)
+      } else {
+        node.style.removeProperty('--kalka-mark-number-x')
+        node.style.removeProperty('--kalka-mark-number-y')
       }
     }
 
@@ -341,7 +426,10 @@ export function MarkLayer({ tool, reservedRight }: MarkLayerProps): JSX.Element 
      */
     const comment = commentNode.current
     const anchor = editing ? marks.find((mark) => mark.entry.id === editing.id) : undefined
-    const box = anchor ? boxOf(anchor) : null
+    // Окно замечания встаёт по тому же прямоугольнику, что и узел метки:
+    // у многострочной цели это последняя строка, и уводить окно к первой
+    // незачем — оно и так становится выноской у своей метки.
+    const box = anchor ? (boxOf(anchor)?.box ?? null) : null
 
     if (comment && box) {
       const placement = placeCallout({
@@ -362,6 +450,14 @@ export function MarkLayer({ tool, reservedRight }: MarkLayerProps): JSX.Element 
 
     // Лог только на фактическом изменении: скрытие блока — событие, кадр
     // прокрутки — нет.
+    // Строчная цель, перенесённая по словам, — новый вид цели, и без счётчика
+    // «подчёркивание встало не туда» на чужом прототипе отлаживается глазами.
+    // Текст правки в лог не попадает, только число.
+    if (многострочных !== многострочныхBefore.current) {
+      многострочныхBefore.current = многострочных
+      log.debug('целей в несколько строк', { целей: многострочных })
+    }
+
     if (hidden !== hiddenBefore.current) {
       hiddenBefore.current = hidden
       log.debug('метки скрыты вместе с якорем', { скрыто: hidden })

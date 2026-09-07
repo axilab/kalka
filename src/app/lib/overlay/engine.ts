@@ -1,10 +1,10 @@
 import { applyStatus } from 'entities/anchor'
-import { entryStore, sanitizeHtml } from 'entities/entry'
+import { entryStore, plainHtml, sanitizeHtml } from 'entities/entry'
 import type { Entry } from 'shared/model/format'
 import type { AnchorMethod, EntryStatus } from 'shared/model/layer'
 import { APPLIED_ATTRIBUTE, REAPPLY_DEBOUNCE_MS, TARGET_ATTRIBUTE } from 'shared/config/constants'
 import { debounce } from 'shared/lib/debounce'
-import { clearScrollTarget, onHydrated } from 'shared/lib/dom'
+import { clearScrollTarget, onHydrated, usesTextPath, writeTextNodes } from 'shared/lib/dom'
 import { createLogger } from 'shared/lib/log'
 import { currentRoute } from 'shared/lib/route'
 import { safely } from 'shared/lib/safe'
@@ -33,7 +33,7 @@ interface Summary {
 let watcher: MutationWatcher | null = null
 
 /*
- * Память наложенного: `id` записи → её `wasHtml` на момент наложения.
+ * Память наложенного: `id` записи → всё, чем её элемент восстанавливают.
  *
  * Нужна ровно для одного случая — запись УДАЛИЛИ. Проход `applyLayer` обходит
  * существующие записи, а у удалённой записи нет: помеченный элемент остался бы
@@ -43,8 +43,26 @@ let watcher: MutationWatcher | null = null
  *
  * Хранилище при этом не обрастает «отложенно удалёнными» записями: уборка
  * следов — задача движка, а не файла обмена.
+ *
+ * ── Почему тройка, а не одна строка ─────────────────────────────────────────
+ *
+ * `was` — потому что на текстовом пути восстанавливать надо простым текстом,
+ * а не разметкой: `replaceChildren(sanitizeHtml(wasHtml))` снёс бы значок
+ * на кнопке.
+ *
+ * `текстовыйПуть` — потому что у удалённой записи `wasHtml` уже неоткуда взять,
+ * а решение о пути принимать всё равно надо. Оно и хранится ПРИНЯТЫМ:
+ * `sweepStaleMarks` и `revertLayer` ветвятся по сохранённому признаку,
+ * а не пересчитывают его по живому элементу — тот к этому моменту уже несёт
+ * нашу же правку, и ответ был бы другим.
  */
-const appliedHtml = new Map<string, string>()
+interface Applied {
+  wasHtml: string
+  was: string
+  текстовыйПуть: boolean
+}
+
+const appliedHtml = new Map<string, Applied>()
 
 /** Атрибут собственного элемента <style> движка: по нему он и снимается. */
 const HIGHLIGHT_ATTRIBUTE = 'data-kalka-highlight'
@@ -158,20 +176,89 @@ function findApplied(id: string, root: Document): Element | null {
   return root.querySelector(`[${APPLIED_ATTRIBUTE}="${CSS.escape(id)}"]`)
 }
 
+/*
+ * ── Два пути записи содержимого, и путь берётся ОТ `wasHtml` ────────────────
+ *
+ * У правки кнопки и ссылки (веха «правка текста в кнопках и ссылках») меняется
+ * только строка: значок внутри кнопки правкой не затрагивается вовсе, и
+ * `replaceChildren` снёс бы его вместе с текстом. Такая правка идёт
+ * `writeTextNodes`, всё остальное — прежним путём, дословно.
+ *
+ * Путь решается по `usesTextPath(el, entry.wasHtml)`, то есть по НЕИЗМЕННЫМ
+ * данным записи, а не по текущей структуре живого элемента. Разбор с живым
+ * кодом — в шапке `usesTextPath` (`shared/lib/dom.ts`). Коротко: путь разметки
+ * сам приводит `<button>Купить <span class="count">3</span></button>` к виду
+ * без детей-элементов (белый список санитайзера `<span>` не пропускает), после
+ * чего предикат по живому элементу переобулся бы на текстовый, `restore`
+ * перестал бы восстанавливать `wasHtml`, и `<span class="count">` потерялся бы
+ * навсегда — включая `revertLayer`. Сегодня такой потери нет, и веха обязана
+ * её не завести.
+ *
+ * Идемпотентность держится ИМЕННО на этом: `applyToElement` делает `restore`,
+ * затем `write`, и решение о пути от числа проходов не зависит.
+ */
+
 /**
- * Возвращает элемент к исходному виду из `wasHtml`.
+ * Возвращает элемент к исходному виду.
  *
  * Источник истины — запись, а не снимок DOM: снимок теряется при перерисовке
  * носителя, а `wasHtml` есть всегда. Отсюда же идемпотентность наложения —
- * оно всегда «вернуть wasHtml, затем записать now», сколько бы раз ни вызвали.
+ * оно всегда «вернуть оригинал, затем записать now», сколько бы раз ни вызвали.
  */
 function restore(el: Element, entry: Entry, root: Document): void {
+  if (usesTextPath(el, entry.wasHtml)) {
+    writeTextNodes(el, entry.was)
+    return
+  }
   el.replaceChildren(sanitizeHtml(entry.wasHtml, root))
 }
 
-/** Пишет текст правки в элемент. Разметка проходит белый список (решение 8). */
+/**
+ * Пишет текст правки в элемент. Разметка проходит белый список (решение 8).
+ *
+ * ── Совместимость с правками, сохранёнными ДО вехи ──────────────────────────
+ *
+ * До вехи `<a>Перейти к прайсу</a>` правился путём разметки, и у таких записей
+ * в `localStorage` и в уже выгруженных файлах обмена `now` содержит HTML —
+ * например `Перейти <b>к прайсу</b>`. После вехи тот же `<a>` стал границей,
+ * и текстовый путь записал бы эту строку в текстовый узел БУКВАЛЬНО: рецензент
+ * увидел бы на ссылке видимые угловые скобки.
+ *
+ * Формат обмена не меняется, поэтому отличить старую запись от новой по данным
+ * нельзя — чинится только здесь, на стороне записи в DOM: на текстовом пути
+ * значение прогоняется через `plainHtml`, тот же единственный разбор, которым
+ * снимает теги печатный отчёт. У новой записи (`now` уже текстом) разбор
+ * вырожден и строку не меняет.
+ */
 function write(el: Element, entry: Entry, root: Document): void {
+  if (usesTextPath(el, entry.wasHtml)) {
+    const plain = plainHtml(entry.now, root)
+    if (plain !== entry.now) {
+      // Само содержимое не логируется: это данные заказчика.
+      log.debug('разметка снята со старой записи', {
+        id: entry.id,
+        снятоЗнаков: entry.now.length - plain.length,
+      })
+    }
+    writeTextNodes(el, plain)
+    return
+  }
   el.replaceChildren(sanitizeHtml(entry.now, root))
+}
+
+/**
+ * Возвращает элемент по ЗАПОМНЕННОМУ оригиналу, когда живой записи уже нет.
+ *
+ * Путь не пересчитывается: он был принят в момент наложения и сохранён вместе
+ * с оригиналом. Пересчёт по живому элементу дал бы другой ответ — элемент
+ * к этому моменту несёт нашу же правку.
+ */
+function restoreRemembered(el: Element, applied: Applied, root: Document): void {
+  if (applied.текстовыйПуть) {
+    writeTextNodes(el, applied.was)
+    return
+  }
+  el.replaceChildren(sanitizeHtml(applied.wasHtml, root))
 }
 
 /**
@@ -198,8 +285,13 @@ function sweepStaleMarks(root: Document): { удалена: number; типИзм
 
     // Оригинал берётся из живой записи, если она есть, и из памяти движка,
     // если записи уже нет. Второй путь — единственный для удалённой правки.
-    const original = entry ? entry.wasHtml : appliedHtml.get(id)
-    if (original !== undefined) el.replaceChildren(sanitizeHtml(original, root))
+    // Оба ветвятся по текстовому пути: у разжалованной записи он считается
+    // по её же `wasHtml`, у удалённой — берётся принятым из памяти.
+    if (entry) restore(el, entry, root)
+    else {
+      const remembered = appliedHtml.get(id)
+      if (remembered) restoreRemembered(el, remembered, root)
+    }
     el.removeAttribute(APPLIED_ATTRIBUTE)
     appliedHtml.delete(id)
     swept[reason] += 1
@@ -334,6 +426,10 @@ function applyToElement(
 ): void {
   if (entry.type !== 'text-override') return
 
+  // Путь считается ОДИН раз на запись и до первого касания элемента: после
+  // `restore` живой элемент — уже наш, и второй ответ был бы другим.
+  const текстовыйПуть = usesTextPath(el, entry.wasHtml)
+
   // Всегда сперва оригинал: так проход остаётся идемпотентным, а выключенный
   // слой возвращает страницу к исходному виду тем же кодом.
   restore(el, entry, root)
@@ -346,8 +442,17 @@ function applyToElement(
   write(el, entry, root)
   el.setAttribute(APPLIED_ATTRIBUTE, entry.id)
   // Запоминаем оригинал ровно в момент, когда след оставлен: если запись потом
-  // удалят, восстанавливать будет уже неоткуда (решение 14).
-  appliedHtml.set(entry.id, entry.wasHtml)
+  // удалят, восстанавливать будет уже неоткуда (решение 14). Вместе с ним —
+  // принятое решение о пути: пересчитать его потом будет не по чему.
+  appliedHtml.set(entry.id, { wasHtml: entry.wasHtml, was: entry.was, текстовыйПуть })
+
+  // Ни `was`, ни `now`, ни их фрагменты в лог не попадают — только длины.
+  log.debug('правка наложена', {
+    id: entry.id,
+    тег: el.tagName.toLowerCase(),
+    путь: текстовыйПуть ? 'текст' : 'разметка',
+    сталоЗнаков: entry.now.length,
+  })
 }
 
 /**
@@ -373,8 +478,11 @@ export function revertLayer(root: Document = document): void {
       // Запись могли удалить, пока элемент был на странице: тогда оригинал
       // берётся из памяти движка. Метку снимаем в любом случае, иначе она
       // останется в чужом DOM после демонтажа.
-      const original = entry ? entry.wasHtml : id === null ? undefined : appliedHtml.get(id)
-      if (original !== undefined) el.replaceChildren(sanitizeHtml(original, root))
+      if (entry) restore(el, entry, root)
+      else {
+        const remembered = id === null ? undefined : appliedHtml.get(id)
+        if (remembered) restoreRemembered(el, remembered, root)
+      }
       el.removeAttribute(APPLIED_ATTRIBUTE)
       reverted += 1
     }

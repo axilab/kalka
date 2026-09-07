@@ -62,3 +62,28 @@ Object.defineProperty(globalThis, 'Storage', {
 
 install('localStorage')
 install('sessionStorage')
+
+/*
+ * `CSS.escape` в jsdom нет вовсе — не урезан, а отсутствует объект `CSS`
+ * целиком. Браузер даёт его нативно, и движок наложения им пользуется, находя
+ * уже наложенные элементы по метке (`app/lib/overlay/engine.ts`, `findApplied`).
+ * Без этой заглушки весь слайс наложения непроверяем: первый же `applyLayer`
+ * падает на `CSS.escape is undefined`.
+ *
+ * Реализация — по спецификации CSS.escape для тех входов, которые в проекте
+ * встречаются: экранируются все символы, кроме букв, цифр, дефиса и
+ * подчёркивания, а ведущая цифра уходит в шестнадцатеричную форму. Полного
+ * алгоритма спецификации здесь нет намеренно: `id` записи виджет генерирует
+ * сам, и экзотических входов у него не бывает.
+ */
+Object.defineProperty(globalThis, 'CSS', {
+  value: {
+    escape(value: string): string {
+      return String(value).replace(/[^\w-]|^(?=\d)/gu, (char) =>
+        char === '' ? '' : `\\${char.codePointAt(0)?.toString(16)} `,
+      )
+    },
+  },
+  configurable: true,
+  writable: true,
+})
