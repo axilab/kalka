@@ -1,6 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { isInsideKalka, onDocumentReady, scrollToElement, isTextElement } from './dom'
+import {
+  isInsideKalka,
+  isTextElement,
+  onDocumentReady,
+  pickTarget,
+  scrollToElement,
+  usesTextPath,
+  writeTextNodes,
+} from './dom'
+import { normalize } from './normalize'
 
 describe('isInsideKalka', () => {
   beforeEach(() => {
@@ -249,5 +258,187 @@ describe('isTextElement: тег против раскладки', () => {
     host.innerHTML = '<div style="display:flex"><span id="чип">10 Мбит/с</span></div>'
 
     expect(isTextElement(host.querySelector('#чип') as Element)).toBe(true)
+  })
+})
+
+/*
+ * Выбор цели правки: граница против подъёма.
+ *
+ * Тестов выбора цели в проекте не было вовсе — `pickFrom` наружу не торчит,
+ * а `findTextTarget` требует события с рабочим `composedPath()`, которое jsdom
+ * синтезирует криво. Веха «правка текста в кнопках и ссылках» вынесла чистое
+ * ядро `pickTarget`, и проверяется оно здесь.
+ *
+ * ВАЖНО про jsdom: у него нет таблицы стилей по умолчанию, `getComputedStyle`
+ * возвращает пустой `display` для всего, что не задано инлайном, и
+ * `displayOf` в таких случаях отвечает `null` — вызывающие откатываются
+ * к поведению по тегам. Поэтому случаи, которые ЗАВИСЯТ от вычисленного
+ * `display` (кнопка `inline-flex`, nav-ссылка `flex`), здесь непроверяемы
+ * и уходят на стенд `dev/interactive.html`. Обходить это подстановкой
+ * инлайновых стилей — значит проверять не то поведение, которое будет
+ * в браузере.
+ */
+describe('pickTarget: граница правки', () => {
+  let host: HTMLDivElement
+
+  beforeEach(() => {
+    host = document.createElement('div')
+    document.body.append(host)
+  })
+
+  afterEach(() => host.remove())
+
+  function target(selector: string): Element | null {
+    return pickTarget(host.querySelector(selector) as Element).element
+  }
+
+  it('кнопка со значком внутри становится целью', () => {
+    host.innerHTML = '<button id="кнопка"><svg id="значок"></svg>Оформить заказ</button>'
+
+    // Значок — собственный бокс, и до вехи `isTextElement` отсекал такую
+    // кнопку целиком. Граница спрашивается раньше и до предиката не доходит.
+    expect(target('#значок')).toBe(host.querySelector('#кнопка'))
+  })
+
+  it('ссылка внутри абзаца становится целью, а не абзац', () => {
+    host.innerHTML = '<p id="абзац">Смотри <a id="ссылка">прайс</a> здесь</p>'
+
+    expect(target('#ссылка')).toBe(host.querySelector('#ссылка'))
+  })
+
+  it('клик по выделенному слову ВНУТРИ ссылки открывает ссылку целиком', () => {
+    host.innerHTML = '<p id="абзац">Смотри <a id="ссылка">Перейти <b id="слово">к прайсу</b></a></p>'
+
+    /*
+     * Случай проверяет НАПРАВЛЕНИЕ остановки подъёма. В главный цикл он
+     * не попадает вовсе: `isTextElement(<b>)` истинен сразу, и дальше работает
+     * `climbToOutermost`. Останавливайся подъём ПЕРЕД границей — целью стало бы
+     * слово, и ошибка прошла бы незамеченной.
+     */
+    expect(target('#слово')).toBe(host.querySelector('#ссылка'))
+  })
+
+  it('ссылка отдельным блоком становится целью', () => {
+    host.innerHTML = '<div><a id="ссылка">Перейти к прайсу</a></div>'
+
+    expect(target('#ссылка')).toBe(host.querySelector('#ссылка'))
+  })
+
+  it('абзац без интерактивных детей ведёт себя как до вехи', () => {
+    host.innerHTML = '<p id="абзац">обычный <strong id="слово">абзац</strong> с разметкой</p>'
+
+    expect(target('#слово')).toBe(host.querySelector('#абзац'))
+  })
+
+  it('span внутри абзаца по-прежнему поднимается до абзаца', () => {
+    host.innerHTML = '<p id="абзац">цена <span id="сумма">500</span> рублей</p>'
+
+    expect(target('#сумма')).toBe(host.querySelector('#абзац'))
+  })
+
+  it('role="button" на div делает целью этот div', () => {
+    host.innerHTML = '<div id="псевдокнопка" role="button"><span id="текст">Показать ещё</span></div>'
+
+    expect(target('#текст')).toBe(host.querySelector('#псевдокнопка'))
+  })
+
+  it('граница с пустым текстом целью не становится, подъём продолжается', () => {
+    host.innerHTML = '<p id="абзац">Смотри <a id="значковая"><svg id="значок"></svg></a> здесь</p>'
+
+    // Кнопка из одного значка править нечего: пустая граница пропускается,
+    // и целью становится абзац вокруг.
+    expect(target('#значок')).toBe(host.querySelector('#абзац'))
+  })
+})
+
+describe('usesTextPath: структура берётся из wasHtml', () => {
+  let host: HTMLDivElement
+
+  beforeEach(() => {
+    host = document.createElement('div')
+    document.body.append(host)
+  })
+
+  afterEach(() => host.remove())
+
+  it('кнопка со счётчиком в span идёт путём разметки', () => {
+    host.innerHTML = '<button id="кнопка">Купить <span class="count">3</span></button>'
+    const кнопка = host.querySelector('#кнопка') as Element
+
+    expect(usesTextPath(кнопка, кнопка.innerHTML)).toBe(false)
+  })
+
+  it('кнопка со значком идёт текстовым путём', () => {
+    host.innerHTML = '<button id="кнопка"><svg></svg>Купить</button>'
+    const кнопка = host.querySelector('#кнопка') as Element
+
+    // `<svg>` в `textContent` не даёт ничего: править тут нечего, кроме строки.
+    expect(usesTextPath(кнопка, кнопка.innerHTML)).toBe(true)
+  })
+
+  it('счётчик остаётся путём разметки, даже когда живой элемент уже без span', () => {
+    host.innerHTML = '<button id="кнопка">Купить 3</button>'
+    const кнопка = host.querySelector('#кнопка') as Element
+
+    /*
+     * Тест на НЕОБРАТИМУЮ ПОТЕРЮ чужой вёрстки. Путь разметки сам приводит
+     * кнопку со счётчиком к такому виду: санитайзер `<span>` не пропускает.
+     * Спроси предикат у живого элемента — он ответит «текстовый путь»,
+     * восстановление перестанет возвращать `wasHtml`, и `<span class="count">`
+     * не вернётся ни при переприменении, ни при снятии слоя.
+     */
+    expect(usesTextPath(кнопка, 'Купить <span class="count">3</span>')).toBe(false)
+  })
+
+  it('не-граница текстовым путём не идёт никогда', () => {
+    host.innerHTML = '<p id="абзац">просто текст</p>'
+    const абзац = host.querySelector('#абзац') as Element
+
+    expect(usesTextPath(абзац, абзац.innerHTML)).toBe(false)
+  })
+})
+
+describe('writeTextNodes', () => {
+  let host: HTMLDivElement
+
+  beforeEach(() => {
+    host = document.createElement('div')
+    document.body.append(host)
+  })
+
+  afterEach(() => host.remove())
+
+  it('меняет текст, а значок оставляет на месте', () => {
+    host.innerHTML = '<button id="кнопка"><svg id="значок"></svg>Оформить заказ</button>'
+    const кнопка = host.querySelector('#кнопка') as Element
+
+    writeTextNodes(кнопка, 'Купить сейчас')
+
+    // Проверяется не только подставленное, но и УЦЕЛЕВШЕЕ: правило
+    // профилактики патча 2026-09-06-21.55.
+    expect(normalize(кнопка.textContent ?? '')).toBe('Купить сейчас')
+    expect(кнопка.querySelector('#значок')).not.toBeNull()
+  })
+
+  it('лишние прямые текстовые узлы очищает, а элементы-дети не трогает', () => {
+    host.innerHTML = '<a id="ссылка">Перейти <b id="жирное">туда</b> сейчас</a>'
+    const ссылка = host.querySelector('#ссылка') as Element
+
+    writeTextNodes(ссылка, 'Открыть прайс')
+
+    // Хвостовой текстовый узел очищен, `<b>` уцелел: строка кладётся
+    // в ПЕРВЫЙ прямой текстовый узел, остальные прямые гасятся.
+    expect(normalize(ссылка.textContent ?? '')).toBe('Открыть прайстуда')
+    expect(ссылка.querySelector('#жирное')).not.toBeNull()
+  })
+
+  it('без прямых текстовых узлов заводит свой', () => {
+    host.innerHTML = '<button id="кнопка"><svg id="значок"></svg></button>'
+    const кнопка = host.querySelector('#кнопка') as Element
+
+    writeTextNodes(кнопка, 'Купить')
+
+    expect(normalize(кнопка.textContent ?? '')).toBe('Купить')
+    expect(кнопка.querySelector('#значок')).not.toBeNull()
   })
 })

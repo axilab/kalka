@@ -408,6 +408,127 @@ const INLINE_TAGS = new Set([
   'WBR',
 ])
 
+/**
+ * Теги, на которых подъём к цели правки ОСТАНАВЛИВАЕТСЯ.
+ *
+ * Интерактивный элемент — самостоятельная вещь на странице: у кнопки и ссылки
+ * свой текст, и правится он целиком, а не куском абзаца вокруг. До вехи
+ * «правка текста в кнопках и ссылках» такие элементы были недостижимы:
+ * `isTextElement` отсекал кнопку с `<svg>` внутри (значок — собственный бокс),
+ * а `climbToOutermost` уводил ссылку внутри абзаца к абзацу.
+ *
+ * Список ОТКРЫТЫЙ, как и `INLINE_TAGS` выше: встретили прототип, где граница
+ * промахивается, — тег дописывается сюда, в одно место.
+ *
+ * `INPUT` в набор НЕ входит намеренно: его текст живёт в атрибутах
+ * (`placeholder`, `value`), а правка атрибутов вынесена отдельной вехой.
+ */
+const EDIT_BOUNDARY_TAGS = new Set(['A', 'BUTTON', 'LABEL', 'SUMMARY'])
+
+/**
+ * Значения атрибута `role`, дающие ту же границу без «правильного» тега.
+ *
+ * `<div role="button">` на живых страницах встречается не реже настоящей
+ * кнопки. Список открыт по той же причине и правится там же, что и
+ * `EDIT_BOUNDARY_TAGS`.
+ */
+const EDIT_BOUNDARY_ROLES = new Set(['button', 'link'])
+
+/**
+ * Граница правки: интерактивный элемент, дальше которого подъём не идёт.
+ *
+ * Проверка стоит из двух сравнений строк и зовётся на каждом движении
+ * указателя — вычисленные стили здесь не спрашиваются вовсе.
+ */
+export function isEditBoundary(el: Element): boolean {
+  if (EDIT_BOUNDARY_TAGS.has(el.tagName)) return true
+  const role = el.getAttribute('role')
+  return role !== null && EDIT_BOUNDARY_ROLES.has(role)
+}
+
+/**
+ * Идёт ли правка этого элемента ТЕКСТОМ, а не разметкой.
+ *
+ * Два условия, и второе считается по `wasHtml`, а НЕ по живому элементу.
+ * Это не удобство подписи, а условие обратимости.
+ *
+ * `<button>Купить <span class="count">3</span></button>` идёт путём разметки —
+ * счётчик непустой. Белый список санитайзера `<span>` не пропускает, поэтому
+ * после первой же записи в DOM остаётся `<button>Купить 3</button>` БЕЗ
+ * детей-элементов. Спроси предикат у живого элемента на следующем проходе —
+ * он ответит «текстовый путь», восстановление уйдёт в `writeTextNodes` вместо
+ * возврата исходной разметки, и `<span class="count">` не вернётся ни при
+ * переприменении, ни при снятии слоя. Страница после снятия виджета отличалась
+ * бы от исходной — прямое нарушение NFR-06.
+ *
+ * `wasHtml` разбирается в отсоединённый `<template>` БЕЗ санитайзера:
+ * санитайзер снял бы и `<svg>`, и `<span>`, и два разных случая слились бы
+ * в один ложно-текстовый. Разбор идёт только на чтение структуры, в страницу
+ * не попадает ничего.
+ *
+ * Дешевизна обязательна: `isEditBoundary` — сравнение строк — проверяется
+ * первым и отсекает почти всё даром; разбор `wasHtml` идёт только после него.
+ */
+export function usesTextPath(el: Element, wasHtml: string): boolean {
+  if (!isEditBoundary(el)) return false
+
+  const template = el.ownerDocument.createElement('template')
+  template.innerHTML = wasHtml
+
+  for (const child of template.content.children) {
+    if (normalize(child.textContent ?? '')) return false
+  }
+  return true
+}
+
+/**
+ * Кладёт строку в текстовые узлы элемента, не трогая детей-элементов.
+ *
+ * Живёт ЗДЕСЬ, а не в движке наложения (`app/lib/overlay/engine.ts`), хотя
+ * первый потребитель именно он. Причина жёсткая: та же операция нужна сборке
+ * вырезки в `entities/cutout`, а `entities` лежит ниже `app` и импортировать
+ * движок не может — `npm run lint` уронит сборку правилом
+ * `no-restricted-imports` (ARCHITECTURE.md, «Правила зависимостей»).
+ * `shared` видят оба потребителя. Унесёте обратно в движок — сломаете сборку.
+ *
+ * Строка кладётся в ПЕРВЫЙ прямой текстовый узел, остальные прямые текстовые
+ * узлы очищаются, элементы-дети не трогаются вовсе: значок на кнопке обязан
+ * пережить правку её текста. Прямых текстовых узлов нет — добавляется новый
+ * последним.
+ *
+ * Санитайзер не участвует: пишется текст, а `createTextNode` разметку
+ * не разбирает.
+ *
+ * Узел создаётся через `el.ownerDocument`, а не через глобальный `document`:
+ * у сборки вырезки на руках отсоединённый клон, и слайсы `entities`
+ * к глобали не обращаются (ARCHITECTURE.md).
+ */
+export function writeTextNodes(el: Element, text: string): void {
+  let first: Text | null = null
+
+  for (const node of el.childNodes) {
+    if (node.nodeType !== Node.TEXT_NODE) continue
+    const textNode = node as Text
+    if (first === null) {
+      first = textNode
+      textNode.data = text
+    } else {
+      textNode.data = ''
+    }
+  }
+
+  if (first === null) {
+    // Кнопка из одного значка либо элемент, чей текст лежит глубже: свой узел
+    // приходится завести. Само содержимое в лог не пишется — это текст
+    // страницы заказчика.
+    log.warn('текстовых узлов нет, добавлен новый', {
+      тег: el.tagName.toLowerCase(),
+      знаков: text.length,
+    })
+    el.appendChild(el.ownerDocument.createTextNode(text))
+  }
+}
+
 /** Атрибут собственного элемента `<style>` с подсветкой: по нему он и снимается. */
 const HOVER_STYLE_ATTRIBUTE = 'data-kalka-hover-style'
 
@@ -541,17 +662,29 @@ interface Pick {
   steps: number
 }
 
-function pickFrom(event: Event): Pick {
-  // Событие собственного интерфейса целью не является никогда: рецензент
-  // нажимает кнопку виджета, а не правит его текст.
-  if (isInsideKalka(event)) return { element: null, steps: 0 }
-
-  const start = event.composedPath()[0]
-  let node: Element | null =
-    start instanceof Element ? start : start instanceof Node ? start.parentElement : null
-
+/**
+ * Чистое ядро выбора цели: от стартового узла вверх до цели правки.
+ *
+ * Экспортируется РАДИ ТЕСТОВ, а не ради потребителей: `pickFrom` требует
+ * события с рабочим `composedPath()`, которое jsdom синтезирует криво, и без
+ * этого шва правило выбора цели непроверяемо. Потребители на странице зовут
+ * `findTextTarget`/`watchPicking`, как и раньше.
+ *
+ * Порядок проверок внутри цикла обязателен: граница спрашивается ПЕРВОЙ, и
+ * `isTextElement` для неё не спрашивается вовсе. Иначе `display: inline-flex`
+ * и дети-`<svg>` снова отсекут кнопку — ровно то, что веха и чинит.
+ */
+export function pickTarget(start: Element): Pick {
+  let node: Element | null = start
   let steps = 0
+
   while (node && steps <= PICK_MAX_DEPTH) {
+    // Граница правки останавливает подъём: у кнопки и ссылки свой текст,
+    // и правится он целиком. Пустая граница (кнопка из одного значка) целью
+    // не становится — подъём продолжается.
+    if (isEditBoundary(node) && normalize(node.textContent ?? '')) {
+      return { element: node, steps }
+    }
     if (isTextElement(node)) return climbToOutermost(node, steps)
     node = node.parentElement
     steps += 1
@@ -560,6 +693,19 @@ function pickFrom(event: Event): Pick {
   // Подходящего элемента нет: под курсором контейнер с блочными детьми либо
   // пустое место. Клик по такому месту игнорируется, подсветки нет.
   return { element: null, steps }
+}
+
+function pickFrom(event: Event): Pick {
+  // Событие собственного интерфейса целью не является никогда: рецензент
+  // нажимает кнопку виджета, а не правит его текст.
+  if (isInsideKalka(event)) return { element: null, steps: 0 }
+
+  const start = event.composedPath()[0]
+  const node: Element | null =
+    start instanceof Element ? start : start instanceof Node ? start.parentElement : null
+
+  if (!node) return { element: null, steps: 0 }
+  return pickTarget(node)
 }
 
 /**
@@ -571,6 +717,15 @@ function pickFrom(event: Event): Pick {
  * оказаться `<span>` внутри абзаца»). Подъём прекращается на первом родителе,
  * который текстовым элементом уже не является: `<section>` с половиной страницы
  * целью не станет.
+ *
+ * ── Граница останавливает подъём НА СЕБЕ, а не перед собой ──────────────────
+ *
+ * Порядок внутри цикла обязателен: сначала проверяется, не является ли родитель
+ * границей, и если да — подъём делает в неё ПОСЛЕДНИЙ шаг и прекращается.
+ * Обратная формулировка («остановиться, если родитель — граница») дала бы
+ * конкретный промах: клик по `<b>` внутри `<a>Перейти <b>к прайсу</b></a>`
+ * в главный цикл `pickTarget` не попадает вовсе (`isTextElement(<b>)` истинен
+ * сразу), подъём оборвался бы перед ссылкой, и целью стал бы `<b>`.
  */
 function climbToOutermost(found: Element, foundAt: number): Pick {
   let element = found
@@ -578,7 +733,13 @@ function climbToOutermost(found: Element, foundAt: number): Pick {
 
   while (steps < PICK_MAX_DEPTH) {
     const parent = element.parentElement
-    if (!parent || !isTextElement(parent)) break
+    if (!parent) break
+    if (isEditBoundary(parent)) {
+      element = parent
+      steps += 1
+      break
+    }
+    if (!isTextElement(parent)) break
     element = parent
     steps += 1
   }
@@ -636,12 +797,25 @@ export function watchPicking(onPick: (el: Element) => void): () => void {
 
     const { element, steps } = pickFrom(event)
     if (!element) {
-      log.debug('под курсором нет текстового элемента, клик пропущен')
+      // Тег стартового узла обязателен: без него отладка промаха на чужом
+      // прототипе сводится к угадыванию.
+      const start = event.composedPath()[0]
+      const from = start instanceof Element ? start : (start as Node | undefined)?.parentElement
+      log.debug('под курсором нет цели', {
+        тег: from?.tagName.toLowerCase() ?? '—',
+        шаговВверх: steps,
+      })
       return
     }
 
     // Текст элемента в лог не пишется: это содержимое страницы заказчика.
-    log.debug('элемент выбран', { тег: element.tagName.toLowerCase(), шаговВверх: steps })
+    // Элемент здесь ещё нетронут, поэтому `innerHTML` — это и есть `wasHtml`.
+    log.debug('элемент выбран', {
+      тег: element.tagName.toLowerCase(),
+      шаговВверх: steps,
+      путь: isEditBoundary(element) ? 'граница' : 'подъём',
+      текстовыйПуть: usesTextPath(element, element.innerHTML),
+    })
     onPick(element)
   })
 
