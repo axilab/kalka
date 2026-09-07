@@ -470,15 +470,43 @@ export function isEditBoundary(el: Element): boolean {
  * первым и отсекает почти всё даром; разбор `wasHtml` идёт только после него.
  */
 export function usesTextPath(el: Element, wasHtml: string): boolean {
-  if (!isEditBoundary(el)) return false
+  return isEditBoundary(el) && hasNoTextChildren(wasHtml, el.ownerDocument)
+}
 
-  const template = el.ownerDocument.createElement('template')
+/**
+ * Второе условие текстового пути отдельно: у КАЖДОГО элемента-ребёнка исходной
+ * разметки пустой нормализованный текст.
+ *
+ * `<svg>` и `<img>` в `textContent` не дают ничего, поэтому у кнопки со значком
+ * условие выполняется. У кнопки со счётчиком в `<span>` — нет.
+ */
+function hasNoTextChildren(wasHtml: string, doc: Document): boolean {
+  const template = doc.createElement('template')
   template.innerHTML = wasHtml
 
   for (const child of template.content.children) {
     if (normalize(child.textContent ?? '')) return false
   }
   return true
+}
+
+/**
+ * Тот же вывод, но ПО ЗАПИСИ, когда живого элемента уже нет.
+ *
+ * Нужен ровно двум местам — строке «стало» печатного отчёта и проверке после
+ * передеплоя: обе читают `now` спустя время, элемента у них на руках нет,
+ * а знать, разметка перед ними или текст, обязаны.
+ *
+ * ── Предел, принятый сознательно ────────────────────────────────────────────
+ *
+ * Границы, заданные АТРИБУТОМ `role` (`<div role="button">`), из записи
+ * невосстановимы: `role` в формате обмена не хранится, а поднимать `format`
+ * ради него веха не стала. Такие записи в этих двух местах читаются как
+ * разметка — то есть так же, как читались до вехи. Последствие узкое
+ * и записано в «Известные пределы» плана.
+ */
+export function usesTextPathByTag(tag: string, wasHtml: string, doc: Document): boolean {
+  return EDIT_BOUNDARY_TAGS.has(tag.toUpperCase()) && hasNoTextChildren(wasHtml, doc)
 }
 
 /**

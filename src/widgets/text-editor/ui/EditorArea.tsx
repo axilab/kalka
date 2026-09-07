@@ -35,6 +35,15 @@ export interface EditorAreaProps {
    * со шрифтом интерфейса, и это честнее выдуманного значения.
    */
   fontFamily?: string
+  /**
+   * Правка идёт ПРОСТЫМ ТЕКСТОМ: у границы правки (кнопка, ссылка, подпись
+   * поля, заголовок раскрывающегося блока) форматирования нет — там правится
+   * строка, а значок внутри правкой не затрагивается вовсе.
+   *
+   * Признак приходит пропом из `features/edit-text`: он считается по элементу
+   * страницы, а слой `widgets` чужой DOM не трогает вовсе (ARCHITECTURE.md).
+   */
+  plainOnly?: boolean
 }
 
 /**
@@ -57,11 +66,16 @@ export function EditorArea({
   openedFor,
   style,
   fontFamily,
+  plainOnly,
 }: EditorAreaProps): JSX.Element {
   useEffect(() => {
     const area = areaRef.current
     if (!area) return
-    area.replaceChildren(sanitizeHtml(html, area.ownerDocument))
+    // На текстовом пути содержимое кладётся ТЕКСТОВЫМ УЗЛОМ, а не разбором:
+    // иначе набранное рецензентом `<b>` как часть текста разбор бы съел,
+    // а сериализованный значок кнопки, наоборот, показал бы разметкой.
+    if (plainOnly) area.replaceChildren(area.ownerDocument.createTextNode(html))
+    else area.replaceChildren(sanitizeHtml(html, area.ownerDocument))
     // Каретка ставится в область сразу: рецензент открыл окно, чтобы править,
     // и лишний клик по области ему не нужен.
     area.focus()
@@ -87,7 +101,9 @@ export function EditorArea({
     const doc = area.ownerDocument
     const html = data.getData('text/html')
 
-    if (html) {
+    // На текстовом пути вставка ВСЕГДА идёт простым текстом: разметке в правке
+    // кнопки взяться неоткуда, и ветка `insertHTML` завела бы её с чёрного хода.
+    if (html && !plainOnly) {
       const holder = doc.createElement('div')
       holder.appendChild(sanitizeHtml(html, doc))
       // `insertHTML` работает по текущему выделению внутри сфокусированной
@@ -108,7 +124,18 @@ export function EditorArea({
     <div
       ref={areaRef}
       class="kalka-editor__area"
-      contentEditable
+      /*
+       * `plaintext-only` — ПЕРВЫЙ рубеж против форматирования с клавиатуры.
+       *
+       * Область — обычный `contentEditable`, и браузер применяет `Cmd/Ctrl+B`
+       * и `Cmd/Ctrl+I` сам, независимо от того, показана панель форматирования
+       * или нет: скрытие панели от этого не защищает.
+       *
+       * Вторым рубежом стоит взятие `textContent` при сохранении
+       * (`TextEditor.tsx`): атрибут поддержан не везде одинаково,
+       * а `textContent` разметку снимает всегда.
+       */
+      contentEditable={plainOnly ? 'plaintext-only' : true}
       role="textbox"
       aria-multiline="true"
       aria-label="Текст правки"

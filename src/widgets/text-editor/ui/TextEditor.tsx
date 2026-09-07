@@ -34,6 +34,7 @@ const PLACES: Readonly<Record<string, string>> = {
   th: 'заголовок столбца',
   figcaption: 'подпись',
   label: 'подпись поля',
+  summary: 'заголовок раскрывающегося блока',
 }
 
 function placeOf(tag: string): string {
@@ -47,8 +48,12 @@ function placeOf(tag: string): string {
  * открывает именно её, а не оригинал). У пожелания по оформлению `now` пуст
  * по определению, поэтому берётся исходная разметка.
  */
-function initialHtml(draft: Entry): string {
-  return draft.type === 'text-override' && draft.now ? draft.now : draft.wasHtml
+function initialHtml(draft: Entry, plainOnly: boolean): string {
+  if (draft.type === 'text-override' && draft.now) return draft.now
+  // На текстовом пути `wasHtml` — это сериализованный значок кнопки вместе
+  // со строкой, и показывать его рецензенту нельзя. У записи `style-wish`
+  // `now` пуст по определению, и именно она сюда и приходит.
+  return plainOnly ? draft.was : draft.wasHtml
 }
 
 export interface TextEditorProps {
@@ -76,7 +81,7 @@ export interface TextEditorProps {
  * `widgets`): он подписан на то же хранилище и переприменит слой сам.
  */
 export function TextEditor({ active, reservedRight }: TextEditorProps): JSX.Element | null {
-  const { draft, existing, element, save, remove, close } = useTextTool(active)
+  const { draft, existing, element, plainOnly, save, remove, close } = useTextTool(active)
   const areaRef = useRef<HTMLDivElement>(null)
   const boxRef = useRef<HTMLDivElement>(null)
   const frame = useRef<number | null>(null)
@@ -167,14 +172,21 @@ export function TextEditor({ active, reservedRight }: TextEditorProps): JSX.Elem
   function onSave(): void {
     const area = areaRef.current
     if (!area) return
-    save(area.innerHTML, style)
+    // Содержимое читает ОКНО, а не область: `textContent` — второй рубеж
+    // против форматирования с клавиатуры, первый стоит атрибутом
+    // `plaintext-only` в самой области.
+    save(plainOnly ? (area.textContent ?? '') : area.innerHTML, style)
   }
 
   return (
     <div class="kalka-editor" ref={boxRef}>
       <p class="kalka-title">Правим {placeOf(draft.tag)}</p>
 
-      <FormatBar areaRef={areaRef} after={<StyleBar value={style} onChange={setStyle} />} />
+      <FormatBar
+        areaRef={areaRef}
+        plainOnly={plainOnly}
+        after={<StyleBar value={style} onChange={setStyle} />}
+      />
 
       {/*
         Заметка показывается ТОЛЬКО когда пожелание задано.
@@ -196,10 +208,11 @@ export function TextEditor({ active, reservedRight }: TextEditorProps): JSX.Elem
 
       <EditorArea
         areaRef={areaRef}
-        html={initialHtml(draft)}
+        html={initialHtml(draft, plainOnly)}
         openedFor={draft.id}
         style={style}
         fontFamily={hostFont}
+        plainOnly={plainOnly}
       />
 
       <div class="kalka-row">

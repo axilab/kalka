@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from 'preact/hooks'
+import { useCallback, useEffect, useMemo, useState } from 'preact/hooks'
 import type { Entry, Style } from 'shared/model/format'
-import { watchPicking } from 'shared/lib/dom'
+import { usesTextPath, watchPicking } from 'shared/lib/dom'
 import { createLogger } from 'shared/lib/log'
 import { captureDraft } from './create'
 import { findEntryFor } from './find'
@@ -14,7 +14,13 @@ interface Editing {
   /** `true` — запись уже была в хранилище, и её можно удалить (FR-11). */
   existing: boolean
   /**
-   * Правимый элемент чужой страницы — тот самый, по которому кликнули.
+   * Элемент чужой страницы, которому ПРИНАДЛЕЖИТ правка.
+   *
+   * Не обязательно кликнутый узел: клик по ссылке внутри уже правленого абзаца
+   * открывает правку абзаца, и элементом здесь становится абзац. Иначе выноска
+   * встала бы по ссылке, шрифт взялся бы у ссылки, а признак простого текста
+   * посчитался бы по границе `<a>` и по `wasHtml` абзаца — из половинок разных
+   * элементов.
    *
    * ── Зачем он наружу ─────────────────────────────────────────────────────
    *
@@ -36,6 +42,15 @@ interface Editing {
 const CLOSED: Editing = { draft: null, existing: false, element: null }
 
 export interface TextTool extends Editing {
+  /**
+   * Правка идёт ПРОСТЫМ ТЕКСТОМ: форматирование недоступно, сохраняется строка.
+   *
+   * Считается РОВНО ОДИН РАЗ и ровно здесь — по элементу записи и её `wasHtml`.
+   * Отсюда признак уходит и в окно редактора, и в сохранение. Второго
+   * вычисления по другому правилу в проекте быть не должно: два правила
+   * однажды разойдутся, и разойдутся молча.
+   */
+  plainOnly: boolean
   /** Сохранить правку и закрыть окно. */
   save: (html: string, style: Style) => void
   /** Удалить существующую правку и закрыть окно (FR-11). */
@@ -68,13 +83,23 @@ export function useTextTool(active: boolean): TextTool {
       // новую: перезахват затёр бы оригинал текстом предыдущей правки.
       const found = findEntryFor(el)
       if (found) {
-        log.debug('открыта уже внесённая правка', { id: found.id, тип: found.type })
-        setEditing({ draft: found, existing: true, element: el })
+        // В `element` кладётся элемент ЗАПИСИ, а не кликнутый узел: клик мог
+        // прийтись на ссылку внутри правленого абзаца, и тогда выноска, шрифт
+        // и признак простого текста считались бы от разных элементов.
+        log.debug('открыта уже внесённая правка', {
+          id: found.entry.id,
+          тип: found.entry.type,
+          простойТекст: usesTextPath(found.element, found.entry.wasHtml),
+        })
+        setEditing({ draft: found.entry, existing: true, element: found.element })
         return
       }
 
       const draft = captureDraft(el)
-      log.debug('открыта новая правка', { id: draft.id })
+      log.debug('открыта новая правка', {
+        id: draft.id,
+        простойТекст: usesTextPath(el, draft.wasHtml),
+      })
       setEditing({ draft, existing: false, element: el })
     })
   }, [active])
@@ -86,13 +111,29 @@ export function useTextTool(active: boolean): TextTool {
     })
   }, [])
 
+  /*
+   * ЕДИНСТВЕННОЕ вычисление признака простого текста на весь проект.
+   *
+   * Слайс инструмента — то место, где на руках есть и элемент, и запись
+   * одновременно. Окно редактора элемента не видит вовсе (`widgets` чужой DOM
+   * не трогают), а `saveEdit` получает одну запись; оба получают уже
+   * посчитанное значение — окно пропом, сохранение параметром.
+   */
+  const plainOnly = useMemo(
+    () =>
+      editing.element && editing.draft
+        ? usesTextPath(editing.element, editing.draft.wasHtml)
+        : false,
+    [editing.element, editing.draft],
+  )
+
   const save = useCallback(
     (html: string, style: Style): void => {
       if (!editing.draft) return
-      saveEdit(editing.draft, html, style)
+      saveEdit(editing.draft, html, style, plainOnly)
       close()
     },
-    [editing.draft, close],
+    [editing.draft, plainOnly, close],
   )
 
   const remove = useCallback((): void => {
@@ -103,5 +144,5 @@ export function useTextTool(active: boolean): TextTool {
     close()
   }, [editing.draft, editing.existing, close])
 
-  return { ...editing, save, remove, close }
+  return { ...editing, plainOnly, save, remove, close }
 }

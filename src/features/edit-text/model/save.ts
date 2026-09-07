@@ -56,8 +56,35 @@ function resolveType(draft: Entry, cleaned: Cleaned, style: Style): EntryType | 
 /**
  * Сохраняет правку. Движок наложения подписан на хранилище и переприменит слой
  * сам — прямого вызова движка отсюда нет и быть не может (`app` выше `features`).
+ *
+ * ── `plainOnly` приходит ПАРАМЕТРОМ, и это не удобство подписи ──────────────
+ *
+ * Признак простого текста спрашивает ЭЛЕМЕНТ, а у слайса сохранения на руках
+ * одна запись. Считать его здесь заново значило бы завести второе правило,
+ * которое однажды разойдётся с первым, и обратиться к `document` из слайса,
+ * которому он не положен. Значение приходит из `useTextTool` — из того же
+ * единственного вычисления, что и проп окна редактора.
+ *
+ * ── `now` перестаёт быть разметкой, и у него есть читатели вне движка ───────
+ *
+ * Их двое, и оба гонят значение через `sanitizeHtml`:
+ *   — `features/print-report/model/line.ts` — строка «стало» печатного отчёта;
+ *   — `features/verify-applied/model/check.ts` — проверка после передеплоя.
+ * Оба научены восстанавливать признак пути ПО САМОЙ ЗАПИСИ: элемента там
+ * уже нет. Подробности и предел — в их собственных шапках.
+ *
+ * ── `cleaned.text` нормализован, и это принято сознательно ──────────────────
+ *
+ * `normalize` схлопывает пробелы и обрезает края. На кнопке и в ссылке двойной
+ * пробел не значит ничего, а `resolveType` уже сегодня сравнивает
+ * нормализованные строки.
  */
-export function saveEdit(draft: Entry, nextHtml: string, nextStyle: Style): void {
+export function saveEdit(
+  draft: Entry,
+  nextHtml: string,
+  nextStyle: Style,
+  plainOnly: boolean,
+): void {
   const cleaned = clean(nextHtml)
   const type = resolveType(draft, cleaned, nextStyle)
 
@@ -81,7 +108,9 @@ export function saveEdit(draft: Entry, nextHtml: string, nextStyle: Style): void
     type,
     // У пожелания по оформлению текст не менялся, и класть его в `now` нельзя:
     // это поле агент читает как «заменить на», а заменять нечего.
-    now: type === 'text-override' ? cleaned.html : '',
+    // На текстовом пути в `now` идёт ТЕКСТ: разметки там быть не может,
+    // потому что редактор её и не даёт набрать.
+    now: type !== 'text-override' ? '' : plainOnly ? cleaned.text : cleaned.html,
     style: nextStyle,
   }
 
@@ -95,6 +124,7 @@ export function saveEdit(draft: Entry, nextHtml: string, nextStyle: Style): void
     былоЗнаков: normalize(draft.was).length,
     сталоЗнаков: cleaned.text.length,
     оформление: hasStyle(nextStyle),
+    простойТекст: plainOnly,
   })
 }
 

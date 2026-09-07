@@ -6,6 +6,7 @@ import { createId } from 'shared/lib/id'
 import { createLogger } from 'shared/lib/log'
 import { normalize } from 'shared/lib/normalize'
 import { currentRoute } from 'shared/lib/route'
+import { usesTextPath } from 'shared/lib/dom'
 
 const log = createLogger('edit-text:create')
 
@@ -25,10 +26,20 @@ const log = createLogger('edit-text:create')
  *
  * `wasHtml` берётся как есть, без нормализации и без обрезки: движок наложения
  * восстанавливает из него оригинал (`app/lib/overlay/engine.ts`), и любое
- * сокращение здесь превратилось бы в потерю чужой вёрстки на странице.
+ * сокращение здесь превратилось бы в потерю чужой вёрстки на странице. Смысла
+ * поля веха «правка текста в кнопках и ссылках» НЕ меняет: `wasHtml` остаётся
+ * свидетельством исходной разметки и для движка, и для агента — даже там,
+ * где сама правка идёт простым текстом.
+ *
+ * А вот `now` на текстовом пути инициализируется значением `was`, а не
+ * `wasHtml`: окно редактора правки кнопки обязано открыться СТРОКОЙ, а не
+ * сериализованным `<svg>`. Второй аргумент предиката здесь — тот самый
+ * `wasHtml`, только что снятый с нетронутого элемента.
  */
 export function captureDraft(el: Element): Entry {
   const wasHtml = el.innerHTML
+  const текстовыйПуть = usesTextPath(el, wasHtml)
+  const was = normalize(el.textContent ?? '')
 
   // Порядок именно такой: сперва якорь, затем контекст. Оба читают страницу
   // ДО какой-либо записи в хранилище и до наложения — иначе контекст описывал
@@ -43,11 +54,12 @@ export function captureDraft(el: Element): Entry {
     type: 'text-override',
     route: currentRoute(),
     tag: el.tagName.toLowerCase(),
-    was: normalize(el.textContent ?? ''),
+    was,
     wasHtml,
     // Пока рецензент ничего не изменил, «стало» равно «было»: окно редактора
-    // открывается с текущим содержимым элемента, а не пустым.
-    now: wasHtml,
+    // открывается с текущим содержимым элемента, а не пустым. На текстовом
+    // пути «было» — это строка, а не разметка.
+    now: текстовыйПуть ? was : wasHtml,
     style: {},
     ...agent,
     anchor,
@@ -62,6 +74,7 @@ export function captureDraft(el: Element): Entry {
     тег: draft.tag,
     длинаТекста: draft.was.length,
     длинаРазметки: draft.wasHtml.length,
+    текстовыйПуть,
     // Показывает, что контекст пришёл измеренным, а не заглушкой.
     повторов: draft.occurrencesOnPage,
   })

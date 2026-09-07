@@ -98,13 +98,28 @@ export interface FormatBarProps {
    * есть что-то кроме оформления текста.
    */
   after?: ComponentChildren
+  /**
+   * Правка идёт простым текстом: пять кнопок оформления и поле адреса
+   * не рисуются вовсе.
+   *
+   * ── Почему панель не прячут целиком ─────────────────────────────────────
+   *
+   * `StyleBar` не стоит рядом с `FormatBar`, а ПЕРЕДАЁТСЯ В НЕГО пропом
+   * `after` и рисуется внутри его ряда. Убери панель — уйдут и размер, и цвет,
+   * то есть всё, что у правки кнопки вообще остаётся: пожелание оформления
+   * доступно ВСЕГДА, недоступно только форматирование текста.
+   *
+   * Поэтому ряд и `{after}` остаются на месте, а исчезает только содержимое
+   * форматирования.
+   */
+  plainOnly?: boolean
 }
 
 /**
  * Панель форматирования (FR-07): жирный, курсив, ссылка, список,
  * снятие форматирования. Подписи по-русски и без технических терминов (FR-36).
  */
-export function FormatBar({ areaRef, after }: FormatBarProps): JSX.Element {
+export function FormatBar({ areaRef, after, plainOnly }: FormatBarProps): JSX.Element {
   const [linkOpen, setLinkOpen] = useState(false)
   const [href, setHref] = useState('')
   /**
@@ -264,44 +279,50 @@ export function FormatBar({ areaRef, after }: FormatBarProps): JSX.Element {
         враньём.
       */}
       <div class="kalka-row">
-        <Button
-          icon={<IconBold />}
-          label="Жирный"
-          tip="Жирный"
-          pressed={format.bold}
-          onClick={apply('bold')}
-        />
-        <Button
-          icon={<IconItalic />}
-          label="Курсив"
-          tip="Курсив"
-          pressed={format.italic}
-          onClick={apply('italic')}
-        />
-        <Button
-          icon={<IconLink />}
-          label="Ссылка"
-          tip="Ссылка"
-          pressed={format.link || linkOpen}
-          onClick={openLink}
-        />
-        <Button
-          icon={<IconList />}
-          label="Список"
-          tip="Список"
-          pressed={format.list}
-          onClick={apply('insertUnorderedList')}
-        />
-        <Button
-          icon={<IconClearFormat />}
-          label="Убрать оформление"
-          tip="Убрать оформление"
-          onClick={clearFormat}
-        />
+        {/* На текстовом пути форматирования нет вовсе, а ряд и `{after}`
+            остаются: размер и цвет доступны и там (см. `plainOnly`). */}
+        {!plainOnly && (
+          <>
+            <Button
+              icon={<IconBold />}
+              label="Жирный"
+              tip="Жирный"
+              pressed={format.bold}
+              onClick={apply('bold')}
+            />
+            <Button
+              icon={<IconItalic />}
+              label="Курсив"
+              tip="Курсив"
+              pressed={format.italic}
+              onClick={apply('italic')}
+            />
+            <Button
+              icon={<IconLink />}
+              label="Ссылка"
+              tip="Ссылка"
+              pressed={format.link || linkOpen}
+              onClick={openLink}
+            />
+            <Button
+              icon={<IconList />}
+              label="Список"
+              tip="Список"
+              pressed={format.list}
+              onClick={apply('insertUnorderedList')}
+            />
+            <Button
+              icon={<IconClearFormat />}
+              label="Убрать оформление"
+              tip="Убрать оформление"
+              onClick={clearFormat}
+            />
+          </>
+        )}
         {after}
       </div>
 
-      {linkOpen && (
+      {!plainOnly && linkOpen && (
         <div class="kalka-row kalka-editor__link">
           <input
             class="kalka-input"
