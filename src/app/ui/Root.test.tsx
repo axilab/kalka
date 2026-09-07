@@ -31,7 +31,25 @@ const FORBIDDEN = ['селектор', 'якорь', 'dom', 'json', 'форма�
 
 let container: HTMLDivElement
 
+/*
+ * Флаги вида сбрасываются ДО отрисовки, и оба.
+ *
+ * `entryStore` — модульный синглтон на весь файл, а проверки этого файла
+ * оставляют после себя и `showOriginal === true` (вид «оригинал»), и
+ * `verifyMode === true` (режим проверки). Утёкший флаг рисует следующий тест
+ * с погашенной палитрой и без меток — и падает не тот тест, который сломали.
+ *
+ * Сброс идёт первой строкой, а не последней: ниже стоит `render`, и после него
+ * первый же кадр прочитал бы утёкшее значение. Повторяется в `afterEach` —
+ * образец в проекте именно такой (`app/lib/overlay/engine.test.ts`).
+ */
+function resetView(): void {
+  entryStore.setShowOriginal(false)
+  entryStore.setVerifyMode(false)
+}
+
 beforeEach(() => {
+  resetView()
   container = document.createElement('div')
   /*
    * Контейнер помечается ТЕМ ЖЕ атрибутом, что и настоящий host-элемент.
@@ -53,6 +71,7 @@ beforeEach(() => {
 afterEach(() => {
   render(null, container)
   container.remove()
+  resetView()
 })
 
 function buttons(): HTMLButtonElement[] {
@@ -118,25 +137,22 @@ describe('Root', () => {
     expect(set).toContain('Текст')
     expect(set).toContain('Область')
     expect(set).toContain('Указатель')
-    // Кнопок вида было две, стало одна на три состояния: подсветка в режиме
-    // оригинала не показывалась и раньше, то есть состояний всегда было три.
+    // Кнопка вида ОДНА, и состояний у неё два: «с правками» и «оригинал».
+    // Третьего, «где изменения», нет намеренно — `docs/adr/0001`.
     expect(set).toContain('Вид: с правками')
     expect(set).toContain('Разбор')
   })
 
-  it('вид страницы обходит три состояния и возвращается в начало', async () => {
+  it('вид страницы обходит два состояния и возвращается в начало', async () => {
     /*
      * Замкнутость цикла — не украшение: из состояния, в которое нельзя
-     * вернуться нажатием, человек выбирается только перезагрузкой.
-     * Порядок тоже закреплён: правки → где изменения → оригинал.
+     * вернуться нажатием, человек выбирается только перезагрузкой. У двух
+     * состояний цикл замыкается вторым нажатием, и проверяются оба шага.
      */
     await flushEffects()
     expect(byName('Вид: с правками')).toBeDefined()
 
     await press('Вид: с правками')
-    expect(byName('Вид: где изменения')).toBeDefined()
-
-    await press('Вид: где изменения')
     expect(byName('Вид: оригинал')).toBeDefined()
 
     await press('Вид: оригинал')
@@ -164,9 +180,8 @@ describe('Root', () => {
     await press('Область')
     expect(pressedTools()).toEqual(['Область'])
 
-    // Цикл видов: с правками → где изменения → оригинал.
+    // Цикл видов: с правками → оригинал. Одно нажатие.
     await press('Вид: с правками')
-    await press('Вид: где изменения')
     await flushEffects()
 
     expect(byName('Вид: оригинал')).toBeDefined()
@@ -176,11 +191,6 @@ describe('Root', () => {
     expect(byName('Текст')?.disabled).toBe(true)
     expect(byName('Область')?.disabled).toBe(true)
     expect(byName('Указатель')?.disabled).toBe(true)
-
-    // Хранилище видов переживает тест: возвращаем его в начало цикла, иначе
-    // следующая проверка начнётся в «оригинале».
-    await press('Вид: оригинал')
-    await flushEffects()
   })
 
   it('выбранный инструмент ровно один', async () => {
