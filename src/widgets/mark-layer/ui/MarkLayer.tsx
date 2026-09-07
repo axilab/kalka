@@ -6,7 +6,7 @@ import { resolveAnchor } from 'entities/anchor'
 import { cutoutBuffer } from 'entities/cutout'
 import { entryStore, numbering } from 'entities/entry'
 import type { Entry } from 'shared/model/format'
-import type { Tool } from 'shared/model/ui'
+import type { RegisterCommit, Tool } from 'shared/model/ui'
 import { APPLIED_ATTRIBUTE } from 'shared/config/constants'
 import { logPlacement, placeCallout } from 'shared/lib/callout'
 import { restorePoint, restoreRect, watchLayout } from 'shared/lib/geometry'
@@ -220,27 +220,58 @@ export interface MarkLayerProps {
    * Без него окно замечания у правого края уезжало бы под рейку.
    */
   reservedRight?: () => number
+  /**
+   * Подписка на фиксацию при смене вида (решение 4 плана вехи).
+   *
+   * Окно замечания регистрирует здесь «сохранить и закрыть», пока открыто.
+   * Разбор, почему операцию отдаёт само окно, — в шапке `RegisterCommit`.
+   */
+  registerCommit?: RegisterCommit
 }
 
-export function MarkLayer({ tool, reservedRight }: MarkLayerProps): JSX.Element {
+export function MarkLayer({ tool, reservedRight, registerCommit }: MarkLayerProps): JSX.Element {
   const version = useStoreVersion()
 
   /*
-   * В виде «оригинал» инструменты не работают вовсе.
+   * ⚠ Гейта по виду страницы здесь НЕТ, и вернуть его нельзя.
    *
-   * `CONTEXT.md` про этот вид говорит прямо: «текст носителя, ни одной метки,
-   * править нельзя». Прежде запрет исполнялся наполовину — метки не рисовались,
-   * а перехват страницы жил, и рамку в «оригинале» можно было обвести, получив
-   * невидимую правку. Признак стоит ЗДЕСЬ, у самого включения инструмента,
-   * чтобы перехвата не было ни одного кадра; рейка снимает выбранный инструмент
-   * и гасит палитру своими средствами (`app/ui/Root`).
+   * Запрет правки в виде «оригинал» исполняет рейка — снятием инструмента
+   * (`app/ui/Root`), — и исполнитель обязан быть ровно один. Стоял он и здесь:
+   * `useDrawArea(tool === 'area' && !original)`. Выглядело это страховкой,
+   * а было вторым исполнителем того же правила, причём в ДОЧЕРНЕМ компоненте.
+   * Все три хука инструментов при `active === false` закрывают своё окно БЕЗ
+   * ЗАПИСИ, то есть гасят его молчаливой отменой, — и оказывались в очереди
+   * раньше рейки, у которой в том же переходе стоит фиксация открытых окон.
+   *
+   * Сегодня операция фиксации самодостаточна и такой сброс переживает
+   * (см. врезку у регистрации ниже), но держать наготове второй путь потери
+   * набранного, чтобы однажды сойтись с ним на первой же правке, незачем.
+   *
+   * Один кадр живого перехвата в «оригинале» ценой не является: чтобы он
+   * выстрелил, нажатие по чужой странице должно попасть ровно между двумя
+   * проходами Preact. Молча потерянное замечание — цена настоящая.
+   *
+   * Видимость самих МЕТОК вид по-прежнему решает: `marks` ниже читает
+   * `showOriginal()` и возвращает пустой набор. Речь только о включении
+   * инструментов.
    */
-  const original = entryStore.showOriginal()
-  const area = useDrawArea(tool === 'area' && !original)
-  const point = usePlacePoint(tool === 'point' && !original)
+  const area = useDrawArea(tool === 'area')
+  const point = usePlacePoint(tool === 'point')
 
   /** Сохранённая запись, по метке которой кликнули (FR-15). */
   const [picked, setPicked] = useState<Entry | null>(null)
+
+  /**
+   * Нынешнее содержимое окна замечания, поднятое из `CommentEditor` парой с `id`.
+   *
+   * Ссылкой, а не состоянием: значение нужно ровно в момент фиксации, и
+   * перерисовывать слой меток на каждую букву замечания незачем — он размечает
+   * и позиционирует метки на каждом кадре прокрутки чужой страницы.
+   */
+  const commentValue = useRef<{ id: string; text: string } | null>(null)
+  const reportComment = useCallback((id: string, text: string): void => {
+    commentValue.current = { id, text }
+  }, [])
 
   // Черновик приходит от того инструмента, который сейчас выбран: одновременно
   // активным может быть только один, поэтому выбирать между ними не приходится.
@@ -503,6 +534,7 @@ export function MarkLayer({ tool, reservedRight }: MarkLayerProps): JSX.Element 
   /** Закрывает окно замечания, ничего не записывая. */
   function close(): void {
     if (editing) log.debug('окно замечания закрыто', { id: editing.id })
+    commentValue.current = null
     setPicked(null)
     area.cancel()
     point.cancel()
@@ -546,6 +578,36 @@ export function MarkLayer({ tool, reservedRight }: MarkLayerProps): JSX.Element 
     // на хранилище: прямого вызова движка отсюда нет и быть не может.
     close()
   }
+
+  /*
+   * Регистрация фиксации окна замечания при смене вида (решение 4 плана вехи).
+   *
+   * Значение поля поднято сюда ПАРОЙ с `id`, и `id` сверяется перед записью:
+   * пока окно открыто, метки остаются нажимаемыми, и без сверки текст одной
+   * записи ушёл бы в другую (разбор — у пропа `report` в `CommentEditor`).
+   *
+   * Пустое замечание фиксация записью не делает — это существующее правило
+   * `save`, и здесь оно не обходится: человек, открывший окно и не написавший
+   * ничего, при смене вида получает отмену, а не пустую запись.
+   *
+   * ⚠ Операция САМОДОСТАТОЧНА, и это её главная защита. Она замыкает саму
+   * запись `editing` и читает набранное из ссылки — живого состояния хука
+   * инструмента не касается ни одним обращением. Поэтому молчаливый сброс
+   * черновика, откуда бы он ни пришёл, её не обезоруживает. Свяжи её с живым
+   * состоянием — и защиту придётся возвращать порядком эффектов, а тесты
+   * о потере не скажут.
+   */
+  useEffect(() => {
+    if (!editing || !registerCommit) return
+    return registerCommit(() => {
+      const typed = commentValue.current
+      if (!typed || typed.id !== editing.id) return
+      // Ни набранного текста, ни его фрагментов: длина уже логируется записью
+      // «замечание сохранено» внутри `save`.
+      log.debug('окно зафиксировано сменой вида', { вид: 'замечание' })
+      save(typed.text)
+    })
+  }, [editing?.id, registerCommit])
 
   function remove(): void {
     if (!editing) return
@@ -617,6 +679,7 @@ export function MarkLayer({ tool, reservedRight }: MarkLayerProps): JSX.Element 
           attach={(node) => {
             commentNode.current = node
           }}
+          report={reportComment}
           onSave={save}
           onRemove={remove}
           onCancel={close}

@@ -29,6 +29,21 @@ export interface CommentEditorProps {
    * строки — лишний слой. Тот же приём уже используется у `Marker`.
    */
   attach?: (node: HTMLElement | null) => void
+  /**
+   * Сообщает наверх текущее содержимое поля — ПАРОЙ с `id` записи.
+   *
+   * Нужно ровно одному потребителю: фиксации окна при смене вида (решение 4
+   * плана вехи). Наружу идёт не управление полем, а его нынешнее значение:
+   * поле остаётся своим, и `value` по-прежнему не приходит извне.
+   *
+   * ⚠ `id` в паре обязателен, и это не украшение. Метки замечаний остаются
+   * нажимаемыми, пока окно открыто: открыл метку A, набрал текст, нажал
+   * метку B — поле показывает `B.now`, а поднятое значение осталось бы от A.
+   * Смена вида записала бы текст A в запись B и закрыла окно, а человек
+   * увидел бы это не сразу и не понял, откуда взялось. С парой получатель
+   * сверяет `id` и отказывается писать.
+   */
+  report?: (id: string, comment: string) => void
 }
 
 /**
@@ -50,12 +65,24 @@ export function CommentEditor({
   onRemove,
   onCancel,
   attach,
+  report,
 }: CommentEditorProps): JSX.Element {
   const [comment, setComment] = useState(entry.now)
 
   // Открытие окна для другой метки обязано показать ЕЁ замечание, а не то,
   // что осталось от предыдущей: состояние поля привязано к записи по id.
-  useEffect(() => setComment(entry.now), [entry.id])
+  //
+  // Тем же движением обновляется и поднятое наверх значение: иначе между сменой
+  // записи и первым нажатием клавиши наверху висела бы пара от ПРЕЖНЕЙ метки.
+  useEffect(() => {
+    setComment(entry.now)
+    report?.(entry.id, entry.now)
+  }, [entry.id])
+
+  function change(next: string): void {
+    setComment(next)
+    report?.(entry.id, next)
+  }
 
   return (
     <div class="kalka-comment" ref={attach}>
@@ -65,7 +92,7 @@ export function CommentEditor({
         class="kalka-comment__area"
         value={comment}
         placeholder="Что здесь не так?"
-        onInput={(event) => setComment((event.target as HTMLTextAreaElement).value)}
+        onInput={(event) => change((event.target as HTMLTextAreaElement).value)}
       />
 
       <div class="kalka-row">

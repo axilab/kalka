@@ -171,9 +171,9 @@ describe('Root', () => {
 
   /*
    * FR-21: «оригинал» — это страница без следов «Кальки», и словарь обещает
-   * про него «править нельзя». Обещание исполняется в двух местах с разными
-   * работами: перехват страницы не включается вовсе (`widgets/mark-layer`),
-   * а рейка приводит в порядок интерфейс — это и проверяется здесь.
+   * про него «править нельзя». Обещание исполняет ОДНО место — рейка: она
+   * снимает выбранный инструмент и гасит палитру. Второго исполнителя нет
+   * намеренно (`docs/adr/0001`, врезка в `widgets/mark-layer`).
    */
   it('вид «оригинал» снимает инструмент и гасит палитру', async () => {
     await flushEffects()
@@ -188,6 +188,54 @@ describe('Root', () => {
     // Нажимаемая кнопка инструмента в этом виде обещала бы работу, которой
     // не будет, — тот же обман, что и мёртвый «Экспорт» при пустом наборе.
     expect(pressedTools()).toEqual([])
+    expect(byName('Текст')?.disabled).toBe(true)
+    expect(byName('Область')?.disabled).toBe(true)
+    expect(byName('Указатель')?.disabled).toBe(true)
+  })
+
+  it('вход в «оригинал» при НЕвыбранном инструменте всё равно гасит палитру', async () => {
+    /*
+     * Тест ЗЕРКАЛА флагов, а не палитры. На голом `setTool(null)` он падает:
+     * инструмент и так `null`, Preact на одинаковом значении перерисовку
+     * пропускает — и палитра осталась бы нарисованной доступной. Случай
+     * не краевой, именно так выглядит вход в режим проверки из ящика разбора.
+     */
+    await flushEffects()
+    expect(pressedTools()).toEqual([])
+
+    await press('Вид: с правками')
+    await flushEffects()
+
+    expect(byName('Текст')?.disabled).toBe(true)
+  })
+
+  it('возврат из «оригинала» делает палитру доступной и НЕ возвращает инструмент', async () => {
+    await flushEffects()
+    await press('Область')
+    await press('Вид: с правками')
+    await flushEffects()
+    expect(pressedTools()).toEqual([])
+
+    await press('Вид: оригинал')
+    await flushEffects()
+
+    expect(byName('Область')?.disabled).toBe(false)
+    // Снятый инструмент не восстанавливается: возврат вида — это возврат вида,
+    // а не отмена снятия.
+    expect(pressedTools()).toEqual([])
+  })
+
+  it('в режиме проверки кнопка «Вид» недоступна, а палитра гаснет тем же флагом', async () => {
+    await flushEffects()
+
+    // Режим проверки ставит ОБА флага сам — ровно так, как это делает вход
+    // в него из ящика разбора. Отдельного условия для палитры нет намеренно:
+    // второе условие однажды разошлось бы с первым.
+    entryStore.setVerifyMode(true)
+    entryStore.setShowOriginal(true)
+    await flushEffects()
+
+    expect(byName('Вид: оригинал')?.disabled).toBe(true)
     expect(byName('Текст')?.disabled).toBe(true)
     expect(byName('Область')?.disabled).toBe(true)
     expect(byName('Указатель')?.disabled).toBe(true)
@@ -305,5 +353,135 @@ describe('Root', () => {
     check()
     await press('Разбор')
     check()
+  })
+})
+
+/*
+ * Фиксация открытого окна при смене вида (решение 4 плана вехи).
+ *
+ * Главный тест вехи: набранное в открытом окне обязано УЦЕЛЕТЬ. Все три хука
+ * инструментов при `active === false` закрывают своё окно БЕЗ записи, поэтому
+ * снятие инструмента — это молчаливая отмена, и фиксация обязана успеть раньше.
+ *
+ * ⚠ Что эти тесты НЕ ловят, и это надо знать, а не выяснять заново. Ни порядок
+ * двух строк внутри эффекта `Root`, ни возвращённый гейт вида в слое меток они
+ * не закрепляют: проверено обеими перестановками, тесты остаются зелёными.
+ * Причина одна и она же — главная защита этого механизма: зарегистрированная
+ * операция САМОДОСТАТОЧНА. Она замыкает саму запись и читает набранное
+ * из ссылки, а не из живого состояния хука, — поэтому молчаливый сброс
+ * черновика её не обезоруживает. Порядок в `Root` и снятый гейт остаются
+ * требованиями вехи и держатся врезками в коде, а не этими тестами.
+ *
+ * Отсюда правило для следующей правки: сделай операцию фиксации зависимой
+ * от живого состояния окна — и защиту придётся возвращать порядком, а эти
+ * тесты о потере не скажут.
+ *
+ * Блок отдельный, потому что ему нужна ЦЕЛЬ на странице носителя: выбор
+ * элемента идёт настоящим кликом, а `elementFromPoint` в jsdom не реализован
+ * вовсе. Оснастка та же, что в `widgets/mark-layer/ui/MarkLayer.test.tsx`.
+ */
+describe('фиксация окна сменой вида', () => {
+  let target: HTMLParagraphElement
+  let elementFromPoint: typeof document.elementFromPoint | undefined
+
+  beforeEach(() => {
+    target = document.createElement('p')
+    target.id = 'цель'
+    target.textContent = 'Тариф «Домашний»'
+    target.getBoundingClientRect = () => new DOMRect(0, 0, 800, 600)
+    document.body.append(target)
+
+    elementFromPoint = document.elementFromPoint
+    document.elementFromPoint = () => target
+  })
+
+  afterEach(() => {
+    target.remove()
+    document.elementFromPoint = elementFromPoint as typeof document.elementFromPoint
+    entryStore.seed([])
+  })
+
+  function pointer(type: string, x: number, y: number): void {
+    document.body.dispatchEvent(
+      new MouseEvent(type, { bubbles: true, composed: true, cancelable: true, clientX: x, clientY: y }),
+    )
+  }
+
+  it('переход в «оригинал» сохраняет открытую правку текста и закрывает окно', async () => {
+    await flushEffects()
+    await press('Текст')
+    await flushEffects()
+
+    // Настоящий клик по цели: инструмент «Текст» перехватывает его сам.
+    target.click()
+    await flushEffects()
+
+    const area = container.querySelector('.kalka-editor__area')
+    expect(area).not.toBeNull()
+    if (!area) return
+    area.textContent = 'Тариф «Домашний» — со скидкой'
+
+    await press('Вид: с правками')
+    await flushEffects()
+
+    // Набранное УЦЕЛЕЛО: запись в хранилище, а не потеряна снятием инструмента.
+    const saved = entryStore.list()
+    expect(saved).toHaveLength(1)
+    expect(saved[0]?.now).toContain('со скидкой')
+    // И окно закрыто: «сохранить и закрыть» — одна операция, а не половина.
+    expect(container.querySelector('.kalka-editor__area')).toBeNull()
+  })
+
+  it('переход в «оригинал» сохраняет набранное замечание к области', async () => {
+    /*
+     * Второй путь фиксации: замечание живёт в состоянии `CommentEditor`,
+     * а не читается из области правки, — и поднимается наверх парой с `id`.
+     * Первый случай про эту половину механизма не говорит ничего.
+     */
+    await flushEffects()
+    await press('Область')
+    await flushEffects()
+
+    pointer('pointerdown', 10, 10)
+    pointer('pointerup', 300, 300)
+    await flushEffects()
+
+    const поле = container.querySelector('textarea')
+    expect(поле).not.toBeNull()
+    if (!поле) return
+    поле.value = 'убрать этот блок'
+    поле.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushEffects()
+
+    await press('Вид: с правками')
+    await flushEffects()
+
+    const saved = entryStore.list()
+    expect(saved).toHaveLength(1)
+    expect(saved[0]?.now).toBe('убрать этот блок')
+    expect(container.querySelector('.kalka-comment')).toBeNull()
+  })
+
+  it('переход в «оригинал» при пустом замечании записи не создаёт', async () => {
+    /*
+     * Невырожденная пара к предыдущему случаю: пустое замечание — это отмена,
+     * а не пустая запись. Правило существующее (`MarkLayer.save`), и веха его
+     * не трогает — но фиксация обязана его соблюдать, а не обходить.
+     */
+    await flushEffects()
+    await press('Область')
+    await flushEffects()
+
+    pointer('pointerdown', 10, 10)
+    pointer('pointerup', 300, 300)
+    await flushEffects()
+
+    expect(container.querySelector('.kalka-comment')).not.toBeNull()
+
+    await press('Вид: с правками')
+    await flushEffects()
+
+    expect(entryStore.list()).toHaveLength(0)
+    expect(container.querySelector('.kalka-comment')).toBeNull()
   })
 })

@@ -2,6 +2,7 @@ import type { JSX } from 'preact'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks'
 import { useTextTool } from 'features/edit-text'
 import type { Entry, Style } from 'shared/model/format'
+import type { RegisterCommit } from 'shared/model/ui'
 import { logPlacement, placeCallout } from 'shared/lib/callout'
 import { watchLayout } from 'shared/lib/geometry'
 import { createLogger } from 'shared/lib/log'
@@ -71,6 +72,13 @@ export interface TextEditorProps {
    * который выноска и чинит.
    */
   reservedRight?: () => number
+  /**
+   * Подписка на фиксацию при смене вида (решение 4 плана вехи).
+   *
+   * Окно регистрирует здесь «сохранить и закрыть», пока открыто. Разбор,
+   * почему операцию отдаёт само окно, — в шапке `RegisterCommit`.
+   */
+  registerCommit?: RegisterCommit
 }
 
 /**
@@ -80,7 +88,11 @@ export interface TextEditorProps {
  * Движок наложения отсюда НЕ вызывается и вызван быть не может (`app` выше
  * `widgets`): он подписан на то же хранилище и переприменит слой сам.
  */
-export function TextEditor({ active, reservedRight }: TextEditorProps): JSX.Element | null {
+export function TextEditor({
+  active,
+  reservedRight,
+  registerCommit,
+}: TextEditorProps): JSX.Element | null {
   const { draft, existing, element, plainOnly, save, remove, close } = useTextTool(active)
   const areaRef = useRef<HTMLDivElement>(null)
   const boxRef = useRef<HTMLDivElement>(null)
@@ -165,18 +177,48 @@ export function TextEditor({ active, reservedRight }: TextEditorProps): JSX.Elem
     }
   }, [schedule])
 
-  // Пока правка не выбрана, окна нет вовсе: пустое окно посреди страницы мешало
-  // бы вести мышью по элементам, ради которых инструмент и включён.
-  if (!draft) return null
-
-  function onSave(): void {
+  /*
+   * `onSave` объявлена ВЫШЕ раннего возврата, и это обязательно.
+   *
+   * Ниже стоит `if (!draft) return null`, а после раннего возврата хуков
+   * не бывает — эффект регистрации туда не поставить вовсе. Поэтому операция
+   * живёт в `useCallback` здесь, а эффект регистрации идёт следом за ней.
+   *
+   * Зависимости — `[plainOnly, style, save]`, и `style` среди них не лишний:
+   * замыкание держит размер и цвет, и зарегистрируй операцию один раз
+   * на открытие окна — фиксация записала бы оформление, каким оно было
+   * в момент регистрации, а выбранное после открылось бы потерянным.
+   */
+  const onSave = useCallback((): void => {
     const area = areaRef.current
     if (!area) return
     // Содержимое читает ОКНО, а не область: `textContent` — второй рубеж
     // против форматирования с клавиатуры, первый стоит атрибутом
     // `plaintext-only` в самой области.
     save(plainOnly ? (area.textContent ?? '') : area.innerHTML, style)
-  }
+  }, [plainOnly, style, save])
+
+  /*
+   * Регистрация операции фиксации, пока окно открыто (решение 4 плана вехи).
+   *
+   * Перерегистрация при каждой смене тождества `onSave` обязательна по той же
+   * причине, по которой `style` стоит в зависимостях выше: реестр обязан
+   * держать операцию с НЫНЕШНИМ замыканием. Набор это переживает
+   * по построению — снятие старой, добавление новой.
+   */
+  useEffect(() => {
+    if (!draft || !registerCommit) return
+    return registerCommit(() => {
+      // Ни набранной разметки, ни её фрагментов: длина уже логируется записью
+      // сохранения внутри `save`.
+      log.debug('окно зафиксировано сменой вида', { вид: 'правка' })
+      onSave()
+    })
+  }, [draft?.id, onSave, registerCommit])
+
+  // Пока правка не выбрана, окна нет вовсе: пустое окно посреди страницы мешало
+  // бы вести мышью по элементам, ради которых инструмент и включён.
+  if (!draft) return null
 
   return (
     <div class="kalka-editor" ref={boxRef}>
